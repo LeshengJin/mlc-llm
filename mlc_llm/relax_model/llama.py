@@ -153,15 +153,21 @@ class LlamaMLP(nn.Module):
         if self.combine_matmul:
             self.gate_up_proj = Linear(hidden_size, 2 * intermediate_size, dtype=dtype, bias=False)
             self.down_proj = Linear(intermediate_size, hidden_size, dtype=dtype, bias=False)
-            self.gate_up_proj.weight.shard_dim = 0
-            self.down_proj.weight.shard_dim = 1
+            self.gate_up_proj.weight.shard_info = {
+                "reorder_func": "reorder_gate_up_proj",
+                "shard_dim": 0,
+                "params": [
+                    intermediate_size,  # gate end
+                ],
+            }
+            self.down_proj.weight.shard_info = {"reorder_func": "no_reorder", "shard_dim": 1}
         else:
             self.gate_proj = Linear(hidden_size, intermediate_size, dtype=dtype, bias=False)
             self.down_proj = Linear(intermediate_size, hidden_size, dtype=dtype, bias=False)
             self.up_proj = Linear(hidden_size, intermediate_size, dtype=dtype, bias=False)
-            self.gate_proj.weight.shard_dim = 0
-            self.up_proj.weight.shard_dim = 0
-            self.down_proj.weight.shard_dim = 1
+            self.gate_proj.weight.shard_info = {"reorder_func": "no_reorder", "shard_dim": 0}
+            self.up_proj.weight.shard_info = {"reorder_func": "no_reorder", "shard_dim": 0}
+            self.down_proj.weight.shard_info = {"reorder_func": "no_reorder", "shard_dim": 1}
 
     def forward(self, x):
         if self.combine_matmul:
@@ -239,7 +245,15 @@ class LlamaAttention(nn.Module):
                 dtype=dtype,
                 bias=False,
             )
-            self.query_key_value_proj.weight.shard_dim = 0
+            self.query_key_value_proj.weight.shard_info = {
+                "reorder_func": "reorder_qkv_proj",
+                "shard_dim": 0,
+                "params": [
+                    self.num_query_heads * self.head_dim,  # q_end
+                    (self.num_query_heads + self.num_key_value_heads) * self.head_dim,  # k_end
+                    self.head_dim, # head_dim
+                ],
+            }
         else:
             self.q_proj = Linear(
                 self.hidden_size,
@@ -259,9 +273,10 @@ class LlamaAttention(nn.Module):
                 dtype=dtype,
                 bias=False,
             )
-            self.q_proj.weight.shard_dim = 0
-            self.k_proj.weight.shard_dim = 0
-            self.v_proj.weight.shard_dim = 0
+
+            self.q_proj.weight.shard_info = {"reorder_func": "no_reorder", "shard_dim": 0}
+            self.k_proj.weight.shard_info = {"reorder_func": "no_reorder", "shard_dim": 0}
+            self.v_proj.weight.shard_info = {"reorder_func": "no_reorder", "shard_dim": 0}
 
         self.o_proj = Linear(
             self.head_dim * self.num_query_heads, self.hidden_size, dtype=dtype, bias=False

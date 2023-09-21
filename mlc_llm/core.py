@@ -564,6 +564,24 @@ def dump_shard_info(args, param_manager):
         json.dump(shard_info_dict, o_f)
 
 
+def dump_shard_info(args, param_manager):
+    if not args.build_model_only:
+        return
+    os.makedirs(os.path.join(args.artifact_path, "params"), exist_ok=True)
+    shard_info_path = os.path.join(args.artifact_path, "params", "shard_info.json")
+    shard_info_dict = {}
+    for _, param in param_manager.params.items():
+        shard_info = param.shard_info
+        if shard_info is None:
+            continue
+        for i in param_manager.param2qrange[param]:
+            param_name = f"param_{i}"
+            shard_info_dict[param_name] = shard_info
+    print(f"Finish exporting sharding information to {shard_info_path}")
+    with open(shard_info_path, "w", encoding="utf-8") as o_f:
+        json.dump(shard_info_dict, o_f)
+
+
 def build_model_from_args(args: argparse.Namespace):
     if args.quantization == "q4f16_0":
         print(
