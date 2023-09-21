@@ -13,6 +13,7 @@ from ..quantization import ParamQuantKind, QuantizationScheme
 from .commons import create_metadata_func
 from .modules import ModuleList
 from .param_manager import ParamManager
+from ..shard import shard_llama
 
 
 @dataclass
@@ -822,38 +823,6 @@ def create_softmax_func(bb: relax.BlockBuilder, config: LlamaConfig) -> None:
         bb.emit_func_output(gv, [logits, temperature])
 
 
-def emit_shard3d(bb: relax.BlockBuilder) -> None:
-    from tvm.script import tir as T
-
-    def _emit(dtype: str, global_symbol: str):
-        @T.prim_func
-        def shard_3d(a: T.handle, num_shards: T.int64, b: T.handle):
-            T.func_attr(
-                {
-                    "tir.noalias": T.bool(True),
-                    "global_symbol": global_symbol,
-                }
-            )
-            s_0, s_1, s_2 = T.int64(), T.int64(), T.int64()
-            # pylint: disable=invalid-name
-            A = T.match_buffer(a, (s_0, s_1, s_2), dtype)
-            B = T.match_buffer(b, (num_shards, s_0, s_1 // num_shards, s_2), dtype)
-            # pylint: enable=invalid-name
-            for j_o, i, j_i, k in T.grid(num_shards, s_0, s_1 // num_shards, s_2):
-                with T.block("B"):
-                    v_j_o = T.axis.spatial(num_shards, j_o)
-                    v_i = T.axis.spatial(s_0, i)
-                    v_j_i = T.axis.spatial(s_1 // num_shards, j_i)
-                    v_k = T.axis.spatial(s_2, k)
-                    B[v_j_o, v_i, v_j_i, v_k] = A[v_i, v_j_o * (s_1 // num_shards) + v_j_i, v_k]
-
-        bb.add_func(shard_3d, global_symbol)
-
-    _emit("float32", "shard3d_fp32")
-    _emit("float16", "shard3d_fp16")
-    _emit("uint32", "shard3d_uint32")
-
-
 def get_model(args, hf_config):
     model_name = args.model
     dtype = args.quantization.model_dtype
@@ -882,7 +851,7 @@ def get_model(args, hf_config):
 
     param_manager = ParamManager()
     bb = relax.BlockBuilder()
-    emit_shard3d(bb)
+    shard_llama.emit_reorder_llama_params()
 
     if sep_embed:
         create_embed_func(bb, param_manager, config, args.quantization)
@@ -953,34 +922,14 @@ def get_model(args, hf_config):
                 "Matmul combination is not turned on, and the function "
                 "is not expected to be entered"
             )
-        num_shards = args.num_shards
-        hidden_size = config.hidden_size
-        head_dim = config.hidden_size // config.num_attention_heads
 
         if "query_key_value_proj" in relax_pname:
-            q_heads = config.num_attention_heads
-            kv_heads = config.num_key_value_heads
-            if kv_heads is None:
-                kv_heads = q_heads
-            q, k, v = torch_params
-            assert q.shape == (q_heads * head_dim, hidden_size)
-            assert k.shape == (kv_heads * head_dim, hidden_size)
-            assert v.shape == (kv_heads * head_dim, hidden_size)
-            q = q.reshape((num_shards, q_heads // num_shards, head_dim, hidden_size))
-            k = k.reshape((num_shards, kv_heads // num_shards, head_dim, hidden_size))
-            v = v.reshape((num_shards, kv_heads // num_shards, head_dim, hidden_size))
-            qkv = np.concatenate([q, k, v], axis=1)
-            qkv = qkv.reshape((-1, hidden_size)).astype(dtype)
-            return qkv
-        if "gate_up_proj" in relax_pname:
-            intermediate_size = config.intermediate_size
-            gate, up = torch_params
-            gate = gate.reshape((num_shards, intermediate_size // num_shards, hidden_size))
-            up = up.reshape((num_shards, intermediate_size // num_shards, hidden_size))
-            gate_up = np.concatenate([gate, up], axis=1)
-            gate_up = gate_up.reshape((-1, hidden_size)).astype(dtype)
-            return gate_up
-        raise ValueError("Unexpected param loading")
+            assert len(torch_params) == 3
+        elif "gate_up_proj" in relax_pname:
+            assert len(torch_params) == 2
+        else:
+            raise ValueError("Unexpected param loading")
+        return np.concatenate(torch_params, axis=0).astype(dtype)
 
     param_manager.set_param_loading_func(
         args.model_path,

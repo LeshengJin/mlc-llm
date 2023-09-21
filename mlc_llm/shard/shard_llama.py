@@ -155,3 +155,8 @@ def emit_reorder_gate_up_proj(bb: relax.BlockBuilder) -> None:
     _emit("float32", "reorder_gate_up_proj_fp32")
     _emit("float16", "reorder_gate_up_proj_fp16")
     _emit("uint32", "reorder_gate_up_proj_uint32")
+
+
+def emit_reorder_llama_params(bb: relax.BlockBuilder):
+    emit_reorder_gate_up_proj(bb)
+    emit_reorder_qvk_proj(bb)
