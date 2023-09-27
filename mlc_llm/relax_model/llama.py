@@ -13,7 +13,6 @@ from ..quantization import ParamQuantKind, QuantizationScheme
 from .commons import create_metadata_func
 from .modules import ModuleList
 from .param_manager import ParamManager
-from ..shard import shard_llama
 
 
 @dataclass
@@ -157,18 +156,18 @@ class LlamaMLP(nn.Module):
             self.gate_up_proj.weight.shard_info = {
                 "reorder_func": "reorder_gate_up_proj",
                 "shard_dim": 0,
-                "params": [
-                    intermediate_size,  # gate end
+                "reorder_params": [
+                    self.num_shards,
                 ],
             }
-            self.down_proj.weight.shard_info = {"reorder_func": "no_reorder", "shard_dim": 1}
+            self.down_proj.weight.shard_info = {"shard_dim": 1}
         else:
             self.gate_proj = Linear(hidden_size, intermediate_size, dtype=dtype, bias=False)
             self.down_proj = Linear(intermediate_size, hidden_size, dtype=dtype, bias=False)
             self.up_proj = Linear(hidden_size, intermediate_size, dtype=dtype, bias=False)
-            self.gate_proj.weight.shard_info = {"reorder_func": "no_reorder", "shard_dim": 0}
-            self.up_proj.weight.shard_info = {"reorder_func": "no_reorder", "shard_dim": 0}
-            self.down_proj.weight.shard_info = {"reorder_func": "no_reorder", "shard_dim": 1}
+            self.gate_proj.weight.shard_info = {"shard_dim": 0}
+            self.up_proj.weight.shard_info = {"shard_dim": 0}
+            self.down_proj.weight.shard_info = {"shard_dim": 1}
 
     def forward(self, x):
         if self.combine_matmul:
@@ -249,11 +248,7 @@ class LlamaAttention(nn.Module):
             self.query_key_value_proj.weight.shard_info = {
                 "reorder_func": "reorder_qkv_proj",
                 "shard_dim": 0,
-                "params": [
-                    self.num_query_heads * self.head_dim,  # q_end
-                    (self.num_query_heads + self.num_key_value_heads) * self.head_dim,  # k_end
-                    self.head_dim, # head_dim
-                ],
+                "reorder_params": [self.num_shards],
             }
         else:
             self.q_proj = Linear(
@@ -275,14 +270,14 @@ class LlamaAttention(nn.Module):
                 bias=False,
             )
 
-            self.q_proj.weight.shard_info = {"reorder_func": "no_reorder", "shard_dim": 0}
-            self.k_proj.weight.shard_info = {"reorder_func": "no_reorder", "shard_dim": 0}
-            self.v_proj.weight.shard_info = {"reorder_func": "no_reorder", "shard_dim": 0}
+            self.q_proj.weight.shard_info = {"shard_dim": 0}
+            self.k_proj.weight.shard_info = {"shard_dim": 0}
+            self.v_proj.weight.shard_info = {"shard_dim": 0}
 
         self.o_proj = Linear(
             self.head_dim * self.num_query_heads, self.hidden_size, dtype=dtype, bias=False
         )
-        self.o_proj.weight.shard_dim = 1
+        self.o_proj.weight.shard_info = {"shard_dim": 1}
 
     def forward(
         self,
@@ -851,7 +846,9 @@ def get_model(args, hf_config):
 
     param_manager = ParamManager()
     bb = relax.BlockBuilder()
-    shard_llama.emit_reorder_llama_params()
+    
+    from ..shard.shard_llama import emit_shard_funcs
+    emit_shard_funcs(bb, config)
 
     if sep_embed:
         create_embed_func(bb, param_manager, config, args.quantization)

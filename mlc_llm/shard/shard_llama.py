@@ -1,162 +1,111 @@
 import tvm
-from tvm import relax
+from tvm import relax, te, topi
 from tvm.script import tir as T
 
-def emit_reorder_qvk_proj(bb: relax.BlockBuilder) -> None:
-    def _emit(dtype: str, global_symbol: str):
-        @T.prim_func
-        def reorder_qkv_proj(var_proj_weight: T.handle, q_end: T.int64, k_end: T.int64, head_dim: T.int64, num_shards: T.int64, var_output: T.handle):
-            T.func_attr({"tir.noalias": T.bool(True), "global_symbol": global_symbol})
-            m, n = T.int64(), T.int64()
-            proj_weight = T.match_buffer(var_proj_weight, (m, n), dtype)
-            output = T.match_buffer(var_output, (m, n), dtype)
-            # with T.block("root"):
-            split_q = T.alloc_buffer((q_end, n))
-            reshape_q = T.alloc_buffer((num_shards, q_end // head_dim // num_shards, head_dim, n))
-            split_v = T.alloc_buffer((k_end - q_end, n))
-            reshape_k = T.alloc_buffer((num_shards, (k_end - q_end) // head_dim // num_shards, head_dim, n))
-            split_v_1 = T.alloc_buffer((m - k_end, n))
-            reshape_v = T.alloc_buffer((num_shards, (m - k_end) // head_dim // num_shards, head_dim, n))
-            concat_qkv = T.alloc_buffer((num_shards, q_end // head_dim // num_shards + (k_end - q_end) // head_dim // num_shards + (m - k_end) // head_dim // num_shards, head_dim, n))
-            for i, j in T.grid(q_end, n):
-                with T.block("split_q"):
-                    v_i = T.axis.spatial(q_end, i)
-                    v_j = T.axis.spatial(n, j)
-                    T.reads(proj_weight[v_i, v_j])
-                    T.writes(split_q[v_i, v_j])
-                    split_q[v_i, v_j] = proj_weight[v_i, v_j]
-            for i, j, k, l in T.grid(num_shards, q_end // head_dim // num_shards, head_dim, n):
-                with T.block("reshape_q"):
-                    v_i = T.axis.spatial(num_shards, i)
-                    v_j = T.axis.spatial(q_end // head_dim // num_shards, j)
-                    v_k = T.axis.spatial(head_dim, k)
-                    v_l = T.axis.spatial(n, l)
-                    T.reads(split_q[(v_i * (q_end // head_dim // num_shards) + v_j) * head_dim + v_k, v_l])
-                    T.writes(reshape_q[v_i, v_j, v_k, v_l])
-                    reshape_q[v_i, v_j, v_k, v_l] = split_q[(v_i * (q_end // head_dim // num_shards) + v_j) * head_dim + v_k, v_l]
-            for i, j in T.grid(k_end - q_end, n):
-                with T.block("split_v"):
-                    v_i = T.axis.spatial(k_end - q_end, i)
-                    v_j = T.axis.spatial(n, j)
-                    T.reads(proj_weight[q_end + v_i, v_j])
-                    T.writes(split_v[v_i, v_j])
-                    split_v[v_i, v_j] = proj_weight[q_end + v_i, v_j]
-            for i, j, k, l in T.grid(num_shards, (k_end - q_end) // head_dim // num_shards, head_dim, n):
-                with T.block("reshape_k"):
-                    v_i = T.axis.spatial(num_shards, i)
-                    v_j = T.axis.spatial((k_end - q_end) // head_dim // num_shards, j)
-                    v_k = T.axis.spatial(head_dim, k)
-                    v_l = T.axis.spatial(n, l)
-                    T.reads(split_v[(v_i * ((k_end - q_end) // head_dim // num_shards) + v_j) * head_dim + v_k, v_l])
-                    T.writes(reshape_k[v_i, v_j, v_k, v_l])
-                    reshape_k[v_i, v_j, v_k, v_l] = split_v[(v_i * ((k_end - q_end) // head_dim // num_shards) + v_j) * head_dim + v_k, v_l]
-            for i, j in T.grid(m - k_end, n):
-                with T.block("split_v_1"):
-                    v_i = T.axis.spatial(m - k_end, i)
-                    v_j = T.axis.spatial(n, j)
-                    T.reads(proj_weight[k_end + v_i, v_j])
-                    T.writes(split_v_1[v_i, v_j])
-                    split_v_1[v_i, v_j] = proj_weight[k_end + v_i, v_j]
-            for i, j, k, l in T.grid(num_shards, (m - k_end) // head_dim // num_shards, head_dim, n):
-                with T.block("reshape_v"):
-                    v_i = T.axis.spatial(num_shards, i)
-                    v_j = T.axis.spatial((m - k_end) // head_dim // num_shards, j)
-                    v_k = T.axis.spatial(head_dim, k)
-                    v_l = T.axis.spatial(n, l)
-                    T.reads(split_v_1[(v_i * ((m - k_end) // head_dim // num_shards) + v_j) * head_dim + v_k, v_l])
-                    T.writes(reshape_v[v_i, v_j, v_k, v_l])
-                    reshape_v[v_i, v_j, v_k, v_l] = split_v_1[(v_i * ((m - k_end) // head_dim // num_shards) + v_j) * head_dim + v_k, v_l]
-            for i, j, k, l in T.grid(num_shards, q_end // head_dim // num_shards + (k_end - q_end) // head_dim // num_shards + (m - k_end) // head_dim // num_shards, head_dim, n):
-                with T.block("concat_qkv"):
-                    v_i = T.axis.spatial(num_shards, i)
-                    v_j = T.axis.spatial(q_end // head_dim // num_shards + (k_end - q_end) // head_dim // num_shards + (m - k_end) // head_dim // num_shards, j)
-                    v_k = T.axis.spatial(head_dim, k)
-                    v_l = T.axis.spatial(n, l)
-                    T.reads(reshape_q[v_i, v_j, v_k, v_l], reshape_k[v_i, v_j - q_end // head_dim // num_shards, v_k, v_l], reshape_v[v_i, v_j - q_end // head_dim // num_shards - (k_end - q_end) // head_dim // num_shards, v_k, v_l])
-                    T.writes(concat_qkv[v_i, v_j, v_k, v_l])
-                    concat_qkv[v_i, v_j, v_k, v_l] = T.if_then_else(v_j < q_end // head_dim // num_shards, reshape_q[v_i, v_j, v_k, v_l], T.if_then_else(v_j < q_end // head_dim // num_shards + (k_end - q_end) // head_dim // num_shards, reshape_k[v_i, v_j - q_end // head_dim // num_shards, v_k, v_l], reshape_v[v_i, v_j - q_end // head_dim // num_shards - (k_end - q_end) // head_dim // num_shards, v_k, v_l]))
-            for i, j in T.grid(m, n):
-                with T.block("output"):
-                    v_i = T.axis.spatial(m, i)
-                    v_j = T.axis.spatial(n, j)
-                    T.reads(concat_qkv[v_i // (m // num_shards), v_i % (m // num_shards) // head_dim, v_i % (m // num_shards) % head_dim, v_j])
-                    T.writes(output[v_i, v_j])
-                    output[v_i, v_j] = concat_qkv[v_i // (m // num_shards), v_i % (m // num_shards) // head_dim, v_i % (m // num_shards) % head_dim, v_j]
-        
-        bb.add_func(reorder_qkv_proj, global_symbol)
+from ..relax_model.llama import LlamaConfig
+
+def emit_reorder_qvk_proj(bb: relax.BlockBuilder, config: LlamaConfig) -> None:
+    def _emit(dtype: str, global_symbol: str, q_heads: int, kv_heads: int, head_dim: int):
+        m = te.var("m", dtype="int64")
+        n = te.var("n", dtype="int64")
+        num_shards = te.var("num_shards", dtype="int64")
+
+        weight = te.placeholder((m, n), dtype=dtype, name="proj_weight")
+        q_weight = te.compute((q_heads * head_dim, n), lambda i, j: weight[i, j], name="split_q")
+        k_weight = te.compute(
+            (kv_heads * head_dim, n), lambda i, j: weight[q_heads * head_dim + i, j], name="split_k"
+        )
+        v_weight = te.compute(
+            (kv_heads * head_dim, n),
+            lambda i, j: weight[(q_heads + kv_heads) * head_dim + i, j],
+            name="split_v",
+        )
+        q_heads_per_shard = q_heads // num_shards
+        kv_heads_per_shard = kv_heads // num_shards
+        q_weight = topi.reshape(q_weight, (num_shards, q_heads_per_shard, head_dim, n))
+        k_weight = topi.reshape(k_weight, (num_shards, kv_heads_per_shard, head_dim, n))
+        v_weight = topi.reshape(v_weight, (num_shards, kv_heads_per_shard, head_dim, n))
+
+        concat_weight = topi.concatenate([q_weight, k_weight, v_weight], axis=1)
+        result = topi.reshape(concat_weight, (m, n))
+
+        reorder_qkv = te.create_prim_func(
+            [weight, q_heads, kv_heads, head_dim, num_shards, result], index_dtype_override="int64"
+        )
+
+        bb.add_func(reorder_qkv, global_symbol)
     
-    _emit("float32", "reorder_qkv_proj_fp32")
-    _emit("float16", "reorder_qkv_proj_fp16")
-    _emit("uint32", "reorder_qkv_proj_uint32")
+    num_query_heads = config.num_attention_heads
+    num_key_value_heads = (
+        config.num_key_value_heads is None
+        and config.num_attention_heads
+        or config.num_key_value_heads
+    )
+    head_dim = config.hidden_size // config.num_attention_heads
+    _emit("float32", "reorder_qkv_proj_fp32", num_query_heads, num_key_value_heads, head_dim)
+    _emit("float16", "reorder_qkv_proj_fp16", num_query_heads, num_key_value_heads, head_dim)
+    _emit("uint32", "reorder_qkv_proj_uint32", num_query_heads, num_key_value_heads, head_dim)
 
 
-def emit_reorder_gate_up_proj(bb: relax.BlockBuilder) -> None:
-    def _emit(dtype: str, global_symbol: str):
-        @T.prim_func
-        def reorder_gate_up_proj(var_proj_weight: T.handle, gate_end: T.int64, num_shards: T.int64, var_output: T.handle):
-            T.func_attr({"tir.noalias": T.bool(True), "global_symbol": global_symbol})
-            m, n = T.int64(), T.int64()
-            proj_weight = T.match_buffer(var_proj_weight, (m, n), dtype)
-            output = T.match_buffer(var_output, (m, n), dtype)
-            # with T.block("root"):
-            split_gate = T.alloc_buffer((gate_end, n))
-            reshape_gate = T.alloc_buffer((num_shards, gate_end // num_shards, n))
-            split_up = T.alloc_buffer((gate_end, n))
-            reshape_up = T.alloc_buffer((num_shards, gate_end // num_shards, n))
-            concat_gate_up = T.alloc_buffer((num_shards, gate_end // num_shards + gate_end // num_shards, n))
-            for i, j in T.grid(gate_end, n):
-                with T.block("split_gate"):
-                    v_i = T.axis.spatial(gate_end, i)
-                    v_j = T.axis.spatial(n, j)
-                    T.reads(proj_weight[v_i, v_j])
-                    T.writes(split_gate[v_i, v_j])
-                    split_gate[v_i, v_j] = proj_weight[v_i, v_j]
-            for i, j, k in T.grid(num_shards, gate_end // num_shards, n):
-                with T.block("reshape_gate"):
-                    v_i = T.axis.spatial(num_shards, i)
-                    v_j = T.axis.spatial(gate_end // num_shards, j)
-                    v_k = T.axis.spatial(n, k)
-                    T.reads(split_gate[v_i * (gate_end // num_shards) + v_j, v_k])
-                    T.writes(reshape_gate[v_i, v_j, v_k])
-                    reshape_gate[v_i, v_j, v_k] = split_gate[v_i * (gate_end // num_shards) + v_j, v_k]
-            for i, j in T.grid(gate_end, n):
-                with T.block("split_up"):
-                    v_i = T.axis.spatial(gate_end, i)
-                    v_j = T.axis.spatial(n, j)
-                    T.reads(proj_weight[gate_end + v_i, v_j])
-                    T.writes(split_up[v_i, v_j])
-                    split_up[v_i, v_j] = proj_weight[gate_end + v_i, v_j]
-            for i, j, k in T.grid(num_shards, gate_end // num_shards, n):
-                with T.block("reshape_up"):
-                    v_i = T.axis.spatial(num_shards, i)
-                    v_j = T.axis.spatial(gate_end // num_shards, j)
-                    v_k = T.axis.spatial(n, k)
-                    T.reads(split_up[v_i * (gate_end // num_shards) + v_j, v_k])
-                    T.writes(reshape_up[v_i, v_j, v_k])
-                    reshape_up[v_i, v_j, v_k] = split_up[v_i * (gate_end // num_shards) + v_j, v_k]
-            for i, j, k in T.grid(num_shards, gate_end // num_shards * T.int64(2), n):
-                with T.block("concat_gate_up"):
-                    v_i = T.axis.spatial(num_shards, i)
-                    v_j = T.axis.spatial(gate_end // num_shards * T.int64(2), j)
-                    v_k = T.axis.spatial(n, k)
-                    T.reads(reshape_gate[v_i, v_j, v_k], reshape_up[v_i, v_j - gate_end // num_shards, v_k])
-                    T.writes(concat_gate_up[v_i, v_j, v_k])
-                    concat_gate_up[v_i, v_j, v_k] = T.if_then_else(v_j < gate_end // num_shards, reshape_gate[v_i, v_j, v_k], reshape_up[v_i, v_j - gate_end // num_shards, v_k])
-            for i, j in T.grid(m, n):
-                with T.block("output"):
-                    v_i = T.axis.spatial(m, i)
-                    v_j = T.axis.spatial(n, j)
-                    T.reads(concat_gate_up[v_i // (gate_end // num_shards * T.int64(2)), v_i % (gate_end // num_shards * T.int64(2)), v_j])
-                    T.writes(output[v_i, v_j])
-                    output[v_i, v_j] = concat_gate_up[v_i // (gate_end // num_shards * T.int64(2)), v_i % (gate_end // num_shards * T.int64(2)), v_j]
+def emit_reorder_gate_up_proj(bb: relax.BlockBuilder, config: LlamaConfig) -> None:
+    def _emit(dtype: str, global_symbol: str, intermediate_size: int):
+        m = te.var("m", dtype="int64")
+        n = te.var("n", dtype="int64")
+        num_shards = te.var("num_shards", dtype="int64")
+
+        weight = te.placeholder((m, n), dtype=dtype, name="proj_weight")
+        gate_weight = te.compute((intermediate_size, n), lambda i, j: weight[i, j], name="split_gate")
+        up_weight = te.compute(
+            (intermediate_size, n), lambda i, j: weight[intermediate_size + i, j], name="split_up"
+        )
+        intermedia_size_per_shard = intermediate_size // num_shards
+        gate_weight = topi.reshape(gate_weight, (num_shards, intermedia_size_per_shard, n))
+        up_weight = topi.reshape(up_weight, (num_shards, intermedia_size_per_shard, n))
+        concat_weight = topi.concatenate([gate_weight, up_weight], axis=1)
+        result = topi.reshape(concat_weight, (m, n))
+
+        reorder_gate_up_proj = te.create_prim_func([weight, num_shards, result], index_dtype_override="int64")
 
         bb.add_func(reorder_gate_up_proj, global_symbol)
     
-    _emit("float32", "reorder_gate_up_proj_fp32")
-    _emit("float16", "reorder_gate_up_proj_fp16")
-    _emit("uint32", "reorder_gate_up_proj_uint32")
+    _emit("float32", "reorder_gate_up_proj_fp32", config.intermediate_size)
+    _emit("float16", "reorder_gate_up_proj_fp16", config.intermediate_size)
+    _emit("uint32", "reorder_gate_up_proj_uint32", config.intermediate_size)
 
 
-def emit_reorder_llama_params(bb: relax.BlockBuilder):
-    emit_reorder_gate_up_proj(bb)
-    emit_reorder_qvk_proj(bb)
+def emit_shard3d(bb: relax.BlockBuilder) -> None:
+    from tvm.script import tir as T
+
+    def _emit(dtype: str, global_symbol: str):
+        @T.prim_func
+        def shard_3d(a: T.handle, num_shards: T.int64, b: T.handle):
+            T.func_attr(
+                {
+                    "tir.noalias": T.bool(True),
+                    "global_symbol": global_symbol,
+                }
+            )
+            s_0, s_1, s_2 = T.int64(), T.int64(), T.int64()
+            # pylint: disable=invalid-name
+            A = T.match_buffer(a, (s_0, s_1, s_2), dtype)
+            B = T.match_buffer(b, (num_shards, s_0, s_1 // num_shards, s_2), dtype)
+            # pylint: enable=invalid-name
+            for j_o, i, j_i, k in T.grid(num_shards, s_0, s_1 // num_shards, s_2):
+                with T.block("B"):
+                    v_j_o = T.axis.spatial(num_shards, j_o)
+                    v_i = T.axis.spatial(s_0, i)
+                    v_j_i = T.axis.spatial(s_1 // num_shards, j_i)
+                    v_k = T.axis.spatial(s_2, k)
+                    B[v_j_o, v_i, v_j_i, v_k] = A[v_i, v_j_o * (s_1 // num_shards) + v_j_i, v_k]
+
+        bb.add_func(shard_3d, global_symbol)
+
+    _emit("float32", "shard3d_fp32")
+    _emit("float16", "shard3d_fp16")
+    _emit("uint32", "shard3d_uint32")
+
+
+def emit_shard_funcs(bb: relax.BlockBuilder, config: LlamaConfig):
+    emit_shard3d(bb)
+    emit_reorder_gate_up_proj(bb, config)
+    emit_reorder_qvk_proj(bb, config)
