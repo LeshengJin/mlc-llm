@@ -20,9 +20,16 @@ namespace llm {
 
 struct ModelMetadata {
   struct Param {
+    struct Preproc {
+      tvm::runtime::String func_name;
+      tvm::runtime::ShapeTuple out_shape;
+      tvm::runtime::DataType out_dtype;
+    };
+
     tvm::runtime::String name;
     tvm::runtime::ShapeTuple shape;
     tvm::runtime::DataType dtype;
+    Preproc preproc;
 
     static Param FromJSON(const picojson::object& param_obj);
   };

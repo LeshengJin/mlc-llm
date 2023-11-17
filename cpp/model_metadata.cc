@@ -15,6 +15,7 @@ ModelMetadata::Param ModelMetadata::Param::FromJSON(const picojson::object& para
   result.name = json::Lookup<std::string>(param, "name");
   result.shape = json::Lookup<ShapeTuple>(param, "shape");
   result.dtype = json::Lookup<DataType>(param, "dtype");
+  result.preproc = json::Lookup<Preproc>(param, "preproc");
   return result;
 }
 

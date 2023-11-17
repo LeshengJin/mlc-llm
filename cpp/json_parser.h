@@ -38,6 +38,17 @@ inline tvm::runtime::ShapeTuple Lookup(const picojson::object& json, const std::
   return tvm::runtime::ShapeTuple(std::move(result));
 }
 
+template <>
+inline ModelMetadata::Param::Preproc Lookup(const picojson::object& json, const std::string& key) {
+  ModelMetadata::Param::Preproc preproc;
+  picojson::object preproc_json = Lookup<picojson::object>(json, key);
+  preproc.func_name = json::Lookup<std::string>(preproc_json, "func_name");
+  preproc.out_dtype = json::Lookup<tvm::runtime::DataType>(preproc_json, "out_dtype");
+  preproc.out_shape = json::Lookup<tvm::runtime::ShapeTuple>(preproc_json, "out_shape");
+
+  return preproc;
+}
+
 inline picojson::object ParseObject(const std::string& json_str) {
   picojson::value result;
   std::string err = picojson::parse(result, json_str);
