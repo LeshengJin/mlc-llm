@@ -1,6 +1,14 @@
 #ifndef MLC_LLM_CPP_LOADER_NDARRAY_CACHE_METADATA_H_
 #define MLC_LLM_CPP_LOADER_NDARRAY_CACHE_METADATA_H_
 
+#define PICOJSON_USE_INT64
+
+#include <picojson.h>
+#include <tvm/runtime/ndarray.h>
+#include <tvm/runtime/registry.h>
+
+#include <unordered_map>
+
 namespace mlc {
 namespace llm {
 namespace loader {

@@ -1,10 +1,14 @@
 #ifndef MLC_LLM_CPP_LOADER_MULTI_GPU_LOADER_H_
 #define MLC_LLM_CPP_LOADER_MULTI_GPU_LOADER_H_
 
+#include <tvm/runtime/container/optional.h>
 #include <tvm/runtime/data_type.h>
+#include <tvm/runtime/disco/builtin.h>
+#include <tvm/runtime/disco/worker.h>
 #include <tvm/runtime/packed_func.h>
 #include <tvm/runtime/registry.h>
 
+#include <fstream>
 #include <functional>
 #include <numeric>
 #include <string>
@@ -83,6 +87,8 @@ class ShardLoaderObj : public Object {
    */
   NDArray LoadDirect(int weight_index) const;
 };
+
+TVM_REGISTER_OBJECT_TYPE(ShardLoaderObj);
 
 }  // namespace loader
 }  // namespace llm

@@ -4,6 +4,22 @@ namespace mlc {
 namespace llm {
 namespace loader {
 
+void LoadBinaryFromFile(const std::string& file_name, std::string* data) {
+  std::ifstream fs(file_name, std::ios::in | std::ios::binary);
+  ICHECK(!fs.fail()) << "Cannot open " << file_name;
+  // get its size:
+  fs.seekg(0, std::ios::end);
+  size_t size = static_cast<size_t>(fs.tellg());
+  fs.seekg(0, std::ios::beg);
+  data->resize(size);
+  fs.read(&(*data)[0], size);
+}
+
+inline int64_t IntegerFromShapeTuple(const ShapeTuple& shape) {
+  CHECK_EQ(shape.size(), 1) << "ValueError: shape tuple must be 1-d to be converted to integer.";
+  return shape[0];
+}
+
 ObjectRef ShardLoaderObj::Create(const std::string& path_to_metadata, const std::string& metadata,
                                  std::string shard_info, Module mod) {
   if (shard_info.empty() && mod.defined()) {
@@ -15,7 +31,7 @@ ObjectRef ShardLoaderObj::Create(const std::string& path_to_metadata, const std:
   n->metadata_ = NDArrayCacheMetadata::LoadFromStr(metadata, path_to_metadata);
   n->current_file_ = nullptr;
   n->param_info_.clear();
-  std::unordered_map<std::string, ShardInfo> shards = relax_vm::LoadShardInfoFromStr(shard_info);
+  std::unordered_map<std::string, ShardInfo> shards = LoadShardInfoFromStr(shard_info);
   for (const FileRecord& file_record : n->metadata_.records) {
     for (const ParamRecord& param_record : file_record.records) {
       const std::string& name = param_record.name;
@@ -26,7 +42,7 @@ ObjectRef ShardLoaderObj::Create(const std::string& path_to_metadata, const std:
         const std::string& name = shard_func.name;
         if (PackedFunc f = mod.defined() ? mod->GetFunction(name, true) : nullptr; f != nullptr) {
           n->shard_funcs_[name] = f;
-        } else if (const PackedFunc* f = runtime::Registry::Get(name)) {
+        } else if (const PackedFunc* f = tvm::runtime::Registry::Get(name)) {
           n->shard_funcs_[name] = *f;
         } else {
           LOG(FATAL) << "ValueError: Undefined function: " << name;
@@ -160,7 +176,7 @@ NDArray ShardLoaderObj::Load(int weight_index) const {
       }
       ScatterFromWorker0(w, recv);
     } else {
-      ScatterFromWorker0(NullOpt, recv);
+      ScatterFromWorker0(tvm::NullOpt, recv);
     }
     return recv;
   } else {

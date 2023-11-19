@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "conversation.h"
+#include "loader/multi_gpu_loader.h"
 #include "model_metadata.h"
 #include "random.h"
 #include "support.h"
@@ -123,7 +124,8 @@ struct FunctionTable {
         device_ids[i] = i;
       }
       this->use_disco = true;
-      this->sess = Session::ProcessSession(num_shards, f_create_process_pool);
+      this->sess =
+          Session::ProcessSession(num_shards, f_create_process_pool, "mlc_chat.distributed.worker");
       this->sess->InitCCL(ccl, ShapeTuple(device_ids));
       this->disco_mod = sess->CallPacked(sess->GetGlobalFunc("runtime.disco.load_vm_module"),
                                          lib_path, null_device);
