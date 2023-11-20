@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "../model_metadata.h"
 #include "ndarray_cache_metadata.h"
 
 namespace mlc {
@@ -31,7 +32,7 @@ class ShardLoaderObj : public Object {
  public:
   /*! \brief Create a shard loader. */
   static ObjectRef Create(const std::string& path_to_metadata, const std::string& metadata,
-                          std::string shard_info, Module mod, tvm::runtime::Module local_vm);
+                          std::string shard_info, std::string model_metadata, Module mod);
   /*! \brief Load the i-th parameter */
   NDArray Load(int weight_index) const;
 
@@ -47,6 +48,10 @@ class ShardLoaderObj : public Object {
 
   /*! \brief Load the i-th parameter from presharded binaries */
   NDArray LoadPresharded(int weight_index) const;
+
+  NDArray LoadFromModelMetaData(std::string param_name) const;
+
+  Array<NDArray> LoadAllFromModelMetaData() const;
 
   /*! \brief Slice the given tensor at a specific dimension */
   NDArray Shard(NDArray source, int dim, int num_slices) const;
@@ -67,8 +72,10 @@ class ShardLoaderObj : public Object {
   NDArrayCacheMetadata metadata_;
   /*! \brief Sharding information for each weight */
   std::vector<ParamInfo> param_info_;
+  std::unordered_map<std::string, ParamInfo> param_info_map_;
   /*! \brief Maps the name of a shard to its index */
   std::unordered_map<std::string, int> param_name_to_index_;
+  ModelMetadata model_metadata_;
   /*! \brief The current file opened to load weights in it */
   mutable const FileRecord* current_file_;
   /*! \brief The context of the current file to be loaded from */
@@ -86,6 +93,8 @@ class ShardLoaderObj : public Object {
    * \returns The full tensor at the specified index
    */
   NDArray LoadDirect(int weight_index) const;
+
+  NDArray LoadDirectFromModelMetadata(std::string param_name) const;
 };
 
 TVM_REGISTER_OBJECT_TYPE(ShardLoaderObj);

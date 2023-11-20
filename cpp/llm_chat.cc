@@ -147,7 +147,18 @@ struct FunctionTable {
       {
         Module mod = this->disco_mod->DebugGetFromRemote(0);
         this->softmax_func_ = mod->GetFunction("softmax_with_temperature");
+        this->model_metadata_str_ = GetModelMetadataStringFromModule(mod);
       }
+      this->model_metadata_ = ModelMetadata::FromString(this->model_metadata_str_);
+      // for (auto param : this->model_metadata_.params) {
+      //   std::cout << param.name << "; " << param.shape << "; " << param.dtype << std::endl;
+      //   for (auto preproc : param.preprocs) {
+      //     std::cout << "\t" << preproc.func_name << ";" << preproc.out_shape << "; "
+      //               << preproc.out_dtype << std::endl;
+      //   }
+      // }
+      // std::cout << this->model_metadata_.params << std::endl;
+      // std::cout << this->model_metadata_str_ << std::endl;
     } else {
       Module executable{nullptr};
       if (reload_lib.type_code() == kTVMModuleHandle) {
@@ -174,26 +185,11 @@ struct FunctionTable {
         return *f;
       };
       this->model_metadata_ = ModelMetadata::FromModule(this->local_vm);
+      this->model_metadata_str_ = GetModelMetadataStringFromModule(this->local_vm);
+      // std::cout << this->model_metadata_str_ << std::endl;
       this->_InitFunctions();
     }
   }
-
-  // std::unordered_map<std::string, ShardInfo> GetShardInfoMap(ModelMetadata model_metadata) {
-  //   picojson::object ret;
-  //   std::unordered_map<std::string, ShardInfo> shards;
-  //   for (ModelMetadata::Param param : model_metadata.params) {
-  //     ShardInfo shard_info;
-  //     ShardInfo::ShardFunc shard_func;
-  //     ShardInfo::TensorInfo output_info;
-  //     output_info.shape = param.preproc.out_shape;
-  //     output_info.dtype = param.preproc.out_dtype;
-  //     shard_func.name = param.preproc.func_name;
-  //     shard_func.output_info = output_info;
-  //     shard_info.funcs.emplace_back(shard_func);
-  //     shards[param.name] = shard_info;
-  //   }
-  //   return shards;
-  // }
 
   ObjectRef LoadParams(const std::string& model_path, Device device, bool use_presharded_weights) {
     if (this->use_disco) {
@@ -201,16 +197,25 @@ struct FunctionTable {
       std::string metadata_path = (fs_model_path / "ndarray-cache.json").string();
       std::string ndarray_cache_metadata = LoadBytesFromFile(metadata_path);
       PackedFunc loader_create = this->get_global_func("runtime.disco.ShardLoader");
-
-      auto load_all_func_name = use_presharded_weights
-                                    ? "runtime.disco.ShardLoaderLoadAllPresharded"
-                                    : "runtime.disco.ShardLoaderLoadAll";
-      PackedFunc loader_load_all = this->get_global_func(load_all_func_name);
       CHECK(loader_create != nullptr);
-      CHECK(loader_load_all != nullptr);
-      DRef loader =
-          loader_create(metadata_path, ndarray_cache_metadata, "", this->disco_mod, this->local_vm);
-      DRef params = loader_load_all(loader);
+
+      bool use_model_metadata = !this->model_metadata_.params.empty();
+      DRef loader = loader_create(metadata_path, ndarray_cache_metadata, "",
+                                  this->model_metadata_str_, this->disco_mod);
+      DRef params{nullptr};
+      if (use_model_metadata) {
+        auto load_all_func_name = "runtime.disco.ShardLoaderLoadAllFromModelMetadata";
+        PackedFunc loader_load_all = this->get_global_func(load_all_func_name);
+        CHECK(loader_load_all != nullptr);
+        params = loader_load_all(loader);
+      } else {
+        auto load_all_func_name = use_presharded_weights
+                                      ? "runtime.disco.ShardLoaderLoadAllPresharded"
+                                      : "runtime.disco.ShardLoaderLoadAll";
+        PackedFunc loader_load_all = this->get_global_func(load_all_func_name);
+        CHECK(loader_load_all != nullptr);
+        params = loader_load_all(loader);
+      }
       return params;
     } else {
       CHECK(!use_presharded_weights) << "Use of pre-sharded weights requires more than one GPU";
@@ -307,6 +312,7 @@ struct FunctionTable {
   bool support_backtracking_kv_;
   PackedFunc fkvcache_array_popn_;
   ModelMetadata model_metadata_;
+  std::string model_metadata_str_;
 };
 
 }  // namespace
@@ -545,6 +551,7 @@ class LLMChat {
         << "Cannot find env function vm.builtin.sample_top_p_from_logits";
     fsample_topp_from_logits_ = *fsample_topp_from_logits_ptr;
     // Step 5. Load params in nd-array cache.
+    // ICHECK(false);
     this->params_ = ft_.LoadParams(model_path, device_, use_presharded_weights_);
     // Step 6. KV cache creation.
     this->kv_cache_ = ft_.create_kv_cache_func_();
@@ -1276,6 +1283,7 @@ class LLMChat {
 
   NDArray Softmax(NDArray input, NDArray temperature_arr) {
     NDArray ret;
+    std::cout << input.Shape() << std::endl;
     ret = ft_.softmax_func_(input, temperature_arr);
     return ret;
   }

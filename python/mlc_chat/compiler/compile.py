@@ -139,6 +139,8 @@ def _compile(args: CompileArgs):
     with args.target:
         mod = relax.get_pipeline("mlc_llm")(mod)
     _attach_auxiliary_methods(mod, named_params, args, shard_info_dict)
+    with open("/opt/scratch/lesheng/mlc-llm/1.py", "w", encoding="utf-8") as outfile:
+        outfile.write(mod.script())
     logger.info("Generating code using TVM Unity")
     args.build_func(mod, args)
     logger.info("Generated: %s", bold(str(args.output)))

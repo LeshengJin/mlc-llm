@@ -21,60 +21,91 @@ inline int64_t IntegerFromShapeTuple(const ShapeTuple& shape) {
   return shape[0];
 }
 
-std::unordered_map<std::string, ShardInfo> GetShardInfoMap(ModelMetadata model_metadata) {
-  std::unordered_map<std::string, ShardInfo> shards;
-  for (ModelMetadata::Param param : model_metadata.params) {
-    ShardInfo shard_info;
-    ShardInfo::ShardFunc shard_func;
-    ShardInfo::TensorInfo output_info;
-    output_info.shape = param.preproc.out_shape;
-    output_info.dtype = param.preproc.out_dtype;
-    shard_func.name = param.preproc.func_name;
-    shard_func.output_info = output_info;
-    shard_info.funcs.emplace_back(shard_func);
-    shards[param.name] = shard_info;
-  }
-  return shards;
-}
+// std::unordered_map<std::string, ShardInfo> GetShardInfoMap(ModelMetadata model_metadata) {
+//   std::unordered_map<std::string, ShardInfo> shards;
+//   for (ModelMetadata::Param param : model_metadata.params) {
+//     ShardInfo shard_info;
+//     ShardInfo::ShardFunc shard_func;
+//     ShardInfo::TensorInfo output_info;
+//     output_info.shape = param.preproc.out_shape;
+//     output_info.dtype = param.preproc.out_dtype;
+//     shard_func.name = param.preproc.func_name;
+//     shard_func.output_info = output_info;
+//     shard_info.funcs.emplace_back(shard_func);
+//     shards[param.name] = shard_info;
+//   }
+//   return shards;
+// }
 
 ObjectRef ShardLoaderObj::Create(const std::string& path_to_metadata, const std::string& metadata,
-                                 std::string shard_info, Module mod,
-                                 tvm::runtime::Module local_vm) {
-  if (shard_info.empty() && mod.defined()) {
-    if (PackedFunc get_shard_info = mod->GetFunction("get_shard_info"); get_shard_info != nullptr) {
-      shard_info = get_shard_info().operator String();
-    }
-  }
+                                 std::string shard_info, std::string model_metadata, Module mod) {
   ObjectPtr<ShardLoaderObj> n = make_object<ShardLoaderObj>();
   n->metadata_ = NDArrayCacheMetadata::LoadFromStr(metadata, path_to_metadata);
   n->current_file_ = nullptr;
   n->param_info_.clear();
-  ModelMetadata model_metadata_ = ModelMetadata::FromModule(local_vm);
-  std::unordered_map<std::string, ShardInfo> shards;
-  if (model_metadata_.params.empty()) {
-    shards = LoadShardInfoFromStr(shard_info);
-  } else {
-    shards = GetShardInfoMap(model_metadata_);
-  }
-  for (const FileRecord& file_record : n->metadata_.records) {
-    for (const ParamRecord& param_record : file_record.records) {
-      const std::string& name = param_record.name;
-      int index = n->param_info_.size();
-      n->param_name_to_index_[name] = index;
-      ShardInfo& shard_info = shards[name];
-      for (const ShardInfo::ShardFunc& shard_func : shard_info.funcs) {
-        const std::string& name = shard_func.name;
-        if (PackedFunc f = mod.defined() ? mod->GetFunction(name, true) : nullptr; f != nullptr) {
-          n->shard_funcs_[name] = f;
-        } else if (const PackedFunc* f = tvm::runtime::Registry::Get(name)) {
-          n->shard_funcs_[name] = *f;
-        } else {
-          LOG(FATAL) << "ValueError: Undefined function: " << name;
-        }
+  n->param_info_map_.clear();
+
+  if (model_metadata.empty()) {
+    if (shard_info.empty() && mod.defined()) {
+      if (PackedFunc get_shard_info = mod->GetFunction("get_shard_info");
+          get_shard_info != nullptr) {
+        shard_info = get_shard_info().operator String();
       }
-      n->param_info_.emplace_back(ParamInfo{&file_record, &param_record, shard_info});
+    }
+    std::unordered_map<std::string, ShardInfo> shards = LoadShardInfoFromStr(shard_info);
+    for (const FileRecord& file_record : n->metadata_.records) {
+      for (const ParamRecord& param_record : file_record.records) {
+        const std::string& name = param_record.name;
+        int index = n->param_info_.size();
+        n->param_name_to_index_[name] = index;
+        ShardInfo& shard_info = shards[name];
+        for (const ShardInfo::ShardFunc& shard_func : shard_info.funcs) {
+          const std::string& name = shard_func.name;
+          if (PackedFunc f = mod.defined() ? mod->GetFunction(name, true) : nullptr; f != nullptr) {
+            n->shard_funcs_[name] = f;
+          } else if (const PackedFunc* f = tvm::runtime::Registry::Get(name)) {
+            n->shard_funcs_[name] = *f;
+          } else {
+            LOG(FATAL) << "ValueError: Undefined function: " << name;
+          }
+        }
+        n->param_info_.emplace_back(ParamInfo{&file_record, &param_record, shard_info});
+      }
+    }
+  } else {
+    n->model_metadata_ = ModelMetadata::FromString(model_metadata);
+    std::unordered_map<std::string, ShardInfo> shards;
+    for (ModelMetadata::Param param : n->model_metadata_.params) {
+      std::vector<ShardInfo::ShardFunc> funcs;
+      funcs.reserve(param.preprocs.size());
+      for (auto preproc : param.preprocs) {
+        ShardInfo::ShardFunc shard_func;
+        shard_func.name = preproc.func_name;
+        shard_func.output_info.shape = preproc.out_shape;
+        shard_func.output_info.dtype = preproc.out_dtype;
+        funcs.emplace_back(shard_func);
+      }
+      shards[param.name] = ShardInfo({funcs});
+    }
+    for (const FileRecord& file_record : n->metadata_.records) {
+      for (const ParamRecord& param_record : file_record.records) {
+        const std::string& name = param_record.name;
+        ShardInfo& shard_info = shards[name];
+        for (const ShardInfo::ShardFunc& shard_func : shard_info.funcs) {
+          const std::string& name = shard_func.name;
+          if (PackedFunc f = mod.defined() ? mod->GetFunction(name, true) : nullptr; f != nullptr) {
+            n->shard_funcs_[name] = f;
+          } else if (const PackedFunc* f = tvm::runtime::Registry::Get(name)) {
+            n->shard_funcs_[name] = *f;
+          } else {
+            LOG(FATAL) << "ValueError: Undefined function: " << name;
+          }
+        }
+        n->param_info_map_[name] = ParamInfo{&file_record, &param_record, shard_info};
+      }
     }
   }
+
   return ObjectRef(std::move(n));
 }
 
@@ -160,6 +191,24 @@ std::tuple<int, int> ParseParamShardingInfo(const ParamRecord* param) {
 
 NDArray ShardLoaderObj::LoadDirect(int weight_index) const {
   const ParamInfo& param_info = param_info_.at(weight_index);
+  const ParamRecord* param = param_info.param;
+  const FileRecord* file = param_info.file;
+
+  DiscoWorker* worker = DiscoWorker::ThreadLocal();
+  Device device = worker->default_device;
+
+  if (file != current_file_) {
+    current_file_ = file;
+    std::string file_name = GetSiblingPath(this->metadata_.path, file->data_path);
+    LoadBinaryFromFile(file_name, &this->current_file_stream_);
+  }
+  return param->Load(
+      device, &this->current_file_stream_,
+      [](NDArray param, const void* data, size_t nbytes) { param.CopyFromBytes(data, nbytes); });
+}
+
+NDArray ShardLoaderObj::LoadDirectFromModelMetadata(std::string param_name) const {
+  const ParamInfo& param_info = param_info_map_.at(param_name);
   const ParamRecord* param = param_info.param;
   const FileRecord* file = param_info.file;
 
@@ -278,6 +327,61 @@ Array<NDArray> ShardLoaderObj::LoadAllPresharded() const {
   return params;
 }
 
+NDArray ShardLoaderObj::LoadFromModelMetaData(std::string param_name) const {
+  DiscoWorker* worker = DiscoWorker::ThreadLocal();
+  int worker_id = worker->worker_id;
+  int num_shards = worker->num_workers;
+  Device device = worker->default_device;
+  const ParamInfo& param_info = param_info_map_.at(param_name);
+  const ParamRecord* param = param_info.param;
+
+  bool needs_sharding = !param_info.shard_info.funcs.empty();
+  if (needs_sharding) {
+    ShapeTuple shape = param_info.shard_info.funcs.back().output_info.shape;
+    DataType dtype = param_info.shard_info.funcs.back().output_info.dtype;
+    ICHECK(shape.size() >= 1 && shape[0] == num_shards)
+        << "ValueError: The first dimension of the "
+        << "output shape must be equal to the "
+        << "number of shards, but got: " << shape << " and num_shards = " << num_shards;
+    NDArray recv = NDArray::Empty(ShapeTuple(shape.begin() + 1, shape.end()), dtype, device);
+    if (worker_id == 0) {
+      NDArray w = LoadDirectFromModelMetadata(param_name);
+      // std::cout << param_name << std::endl;
+      // std::cout << w.Shape() << " " << w.Shape() << std::endl;
+      for (const ShardInfo::ShardFunc& shard_func : param_info.shard_info.funcs) {
+        w = this->ApplyShardFunc(shard_func, w);
+      }
+      ScatterFromWorker0(w, recv);
+    } else {
+      ScatterFromWorker0(tvm::NullOpt, recv);
+    }
+    return recv;
+  } else {
+    if (worker_id == 0) {
+      NDArray w = LoadDirectFromModelMetadata(param_name);
+      // std::cout << param_name << std::endl;
+      // std::cout << w.Shape() << std::endl;
+      BroadcastFromWorker0(w, w);
+      return w;
+    } else {
+      NDArray w = NDArray::Empty(param->shape, param->dtype, device);
+      BroadcastFromWorker0(w, w);
+      return w;
+    }
+  }
+}
+
+Array<NDArray> ShardLoaderObj::LoadAllFromModelMetaData() const {
+  int n = static_cast<int>(param_info_map_.size());
+  Array<NDArray> shards;
+  shards.reserve(n);
+  for (auto param : model_metadata_.params) {
+    std::string param_name = param.name;
+    shards.push_back(this->LoadFromModelMetaData(param_name));
+  }
+  return shards;
+}
+
 TVM_REGISTER_GLOBAL("runtime.disco.ShardLoader").set_body_typed(ShardLoaderObj::Create);
 TVM_REGISTER_GLOBAL("runtime.disco.ShardLoaderLoad")
     .set_body_typed([](ObjectRef loader_obj, ShapeTuple weight_index) {
@@ -293,6 +397,13 @@ TVM_REGISTER_GLOBAL("runtime.disco.ShardLoaderLoadPresharded")
                                << loader_obj->GetTypeKey();
       return loader->LoadPresharded(IntegerFromShapeTuple(weight_index));
     });
+// TVM_REGISTER_GLOBAL("runtime.disco.ShardLoaderLoadFromModelMetaData")
+//     .set_body_typed([](ObjectRef loader_obj, ShapeTuple weight_index) {
+//       const auto* loader = loader_obj.as<ShardLoaderObj>();
+//       CHECK(loader != nullptr) << "TypeError: Expected ShardLoaderObj, but gets: "
+//                                << loader_obj->GetTypeKey();
+//       return loader->LoadFromModelMetaData(IntegerFromShapeTuple(weight_index));
+//     });
 
 TVM_REGISTER_GLOBAL("runtime.disco.ShardLoaderLoadAll").set_body_typed([](ObjectRef loader_obj) {
   const auto* loader = loader_obj.as<ShardLoaderObj>();
@@ -307,6 +418,13 @@ TVM_REGISTER_GLOBAL("runtime.disco.ShardLoaderLoadAllPresharded")
       CHECK(loader != nullptr) << "TypeError: Expected ShardLoaderObj, but gets: "
                                << loader_obj->GetTypeKey();
       return loader->LoadAllPresharded();
+    });
+TVM_REGISTER_GLOBAL("runtime.disco.ShardLoaderLoadAllFromModelMetadata")
+    .set_body_typed([](ObjectRef loader_obj) {
+      const auto* loader = loader_obj.as<ShardLoaderObj>();
+      CHECK(loader != nullptr) << "TypeError: Expected ShardLoaderObj, but gets: "
+                               << loader_obj->GetTypeKey();
+      return loader->LoadAllFromModelMetaData();
     });
 
 TVM_REGISTER_GLOBAL("runtime.disco.ShardLoaderLoadParamOnWorker0")

@@ -15,6 +15,7 @@
 namespace picojson {
 class value;
 using object = std::unordered_map<std::string, value>;
+using array = std::vector<value>;
 }  // namespace picojson
 
 namespace mlc {
@@ -26,12 +27,14 @@ struct ModelMetadata {
       tvm::runtime::String func_name;
       tvm::runtime::ShapeTuple out_shape;
       tvm::runtime::DataType out_dtype;
+
+      static Preproc FromJSON(const picojson::array& json_preproc);
     };
 
     tvm::runtime::String name;
     tvm::runtime::ShapeTuple shape;
     tvm::runtime::DataType dtype;
-    Preproc preproc;
+    std::vector<Preproc> preprocs;
 
     static Param FromJSON(const picojson::object& param_obj);
   };
@@ -41,7 +44,10 @@ struct ModelMetadata {
 
   static ModelMetadata FromJSON(const picojson::object& json_str);
   static ModelMetadata FromModule(tvm::runtime::Module module);
+  static ModelMetadata FromString(std::string json_str);
 };
+
+std::string GetModelMetadataStringFromModule(tvm::runtime::Module module);
 
 }  // namespace llm
 }  // namespace mlc
