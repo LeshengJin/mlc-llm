@@ -31,7 +31,7 @@ class ShardLoaderObj : public Object {
  public:
   /*! \brief Create a shard loader. */
   static ObjectRef Create(const std::string& path_to_metadata, const std::string& metadata,
-                          std::string shard_info, Module mod);
+                          std::string shard_info, Module mod, tvm::runtime::Module local_vm);
   /*! \brief Load the i-th parameter */
   NDArray Load(int weight_index) const;
 

@@ -4,7 +4,7 @@ import json
 import logging
 from io import StringIO
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from tvm import IRModule, relax
 from tvm.relax.frontend import nn
@@ -14,6 +14,8 @@ from ..support.style import bold
 from .flags_model_config_override import ModelConfigOverride
 from .flags_optimization import OptimizationFlags
 from .model import Model
+from .model.model import ModelConfig
+from .model.sharding import create_shard_func
 from .quantization import Quantization
 
 logger = logging.getLogger(__name__)
@@ -52,16 +54,18 @@ def _attach_auxiliary_methods(
     mod: IRModule,
     named_params: List[Tuple[str, nn.Parameter]],
     args: CompileArgs,
+    shard_info_dict: Dict[str, Tuple[List[int], str]],
 ) -> None:
     def _get_memory_usage():
         return {str(k): int(v) for k, v in mod.attrs["mlc_llm.memory_usage"].items()}
 
-    def _get_param_info():
+    def _get_param_info(shard_info_dict):
         return [
             {
                 "name": name,
                 "shape": list(param.shape),
                 "dtype": param.dtype,
+                "shard_info": shard_info_dict[name],
             }
             for name, param in named_params
         ]
@@ -77,7 +81,7 @@ def _attach_auxiliary_methods(
             "quantization": args.quantization.name,
             "model_type": args.model.name,
             "memory_usage": _get_memory_usage(),
-            "params": _get_param_info(),
+            "params": _get_param_info(shard_info_dict),
         }
     )
 
@@ -94,6 +98,32 @@ def _attach_variable_bounds(mod, model_config):
             )
 
 
+def _attach_shard_funcs(
+    mod, named_params: List[Tuple[str, nn.Parameter]], model_config: ModelConfig
+):
+    def _get_shard_info():
+        shard_info_dict = {}
+        shard_funcs = {}
+        for name, param in named_params:
+            shard_func_name, shard_func, shard_func_info = create_shard_func(
+                name, param, model_config.num_shards, model_config
+            )
+            shard_info_dict[name] = []
+            if shard_func_name is None:
+                continue
+            shard_info_dict[name].append((shard_func_name, shard_func_info))
+            if shard_func_name not in shard_funcs:
+                shard_funcs[shard_func_name] = shard_func
+        return shard_info_dict, shard_funcs
+
+    shard_info_dict, shard_funcs = _get_shard_info()
+    for name, func in shard_funcs.items():
+        func = func.with_attr({"global_symbol": name})
+        mod[name] = func
+
+    return shard_info_dict
+
+
 def _compile(args: CompileArgs):
     logger.info("Creating model from: %s", args.config)
     model_config = args.model.config.from_file(args.config)
@@ -105,9 +135,10 @@ def _compile(args: CompileArgs):
     )
     logger.info("Running optimizations using TVM Unity")
     _attach_variable_bounds(mod, model_config)
+    shard_info_dict = _attach_shard_funcs(mod, named_params, model_config)
     with args.target:
         mod = relax.get_pipeline("mlc_llm")(mod)
-    _attach_auxiliary_methods(mod, named_params, args)
+    _attach_auxiliary_methods(mod, named_params, args, shard_info_dict)
     logger.info("Generating code using TVM Unity")
     args.build_func(mod, args)
     logger.info("Generated: %s", bold(str(args.output)))
@@ -125,6 +156,7 @@ def compile(  # pylint: disable=too-many-arguments,redefined-builtin
     context_window_size: Optional[int],
     sliding_window: Optional[int],
     sliding_window_chunk_size: Optional[int],
+    num_shards: Optional[int],
 ):
     """Compile a model given its configuration and quantization format to a specific target."""
     args = CompileArgs(
@@ -140,6 +172,7 @@ def compile(  # pylint: disable=too-many-arguments,redefined-builtin
             context_window_size=context_window_size,
             sliding_window=sliding_window,
             sliding_window_chunk_size=sliding_window_chunk_size,
+            num_shards=num_shards,
         ),
     )
     args.display()

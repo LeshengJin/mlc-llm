@@ -107,6 +107,12 @@ def main(argv):
         default=None,
         help=HELP["sliding_window_chunk_size"] + ' (default: "%(default)s")',
     )
+    parser.add_argument(
+        "--num-shards",
+        type=int,
+        default=None,
+        help=HELP["num_shards"] + ' (default: "%(default)s")',
+    )
     parsed = parser.parse_args(argv)
     target, build_func = detect_target_and_host(parsed.device, parsed.host)
     parsed.model_type = detect_model_type(parsed.model_type, parsed.config)
@@ -122,4 +128,5 @@ def main(argv):
         context_window_size=parsed.context_window_size,
         sliding_window=parsed.sliding_window,
         sliding_window_chunk_size=parsed.sliding_window_chunk_size,
+        num_shards=parsed.num_shards,
     )

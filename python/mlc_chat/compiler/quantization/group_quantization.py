@@ -313,13 +313,16 @@ class GroupQuantizeLinear(nn.Module):
         ret : GroupQuantizeLinear
             The group quantized GroupQuantizeLinear layer.
         """
-        return GroupQuantizeLinear(
+        quantized_linear = GroupQuantizeLinear(
             in_features=linear.in_features,
             out_features=linear.out_features,
             config=config,
             bias=getattr(linear, "bias", None) is not None,
             out_dtype=linear.out_dtype,
         )
+        quantized_linear.q_weight.shard_strategy = linear.weight.shard_strategy
+        quantized_linear.q_scale.shard_strategy = linear.weight.shard_strategy
+        return quantized_linear
 
     def forward(self, x: nn.Tensor) -> nn.Tensor:  # pylint: disable=invalid-name
         """
@@ -403,13 +406,16 @@ class GroupQuantizeMultiLinear(nn.Module):  # pylint: disable=too-many-instance-
         ret : GroupQuantizeMultiLinear
             The group quantized GroupQuantizeMultiLinear layer.
         """
-        return GroupQuantizeMultiLinear(
+        quantized_multi_linear = GroupQuantizeMultiLinear(
             in_features=multi_linear.in_features,
             out_features=multi_linear.out_features,
             config=config,
             bias=getattr(multi_linear, "bias", None) is not None,
             out_dtype=multi_linear.out_dtype,
         )
+        quantized_multi_linear.q_weight.shard_strategy = multi_linear.weight.shard_strategy
+        quantized_multi_linear.q_scale.shard_strategy = multi_linear.weight.shard_strategy
+        return quantized_multi_linear
 
     def forward(self, x: nn.Tensor) -> Sequence[nn.Tensor]:  # pylint: disable=invalid-name
         """

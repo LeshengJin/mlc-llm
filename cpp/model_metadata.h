@@ -2,6 +2,8 @@
  * \file model_metadata.h
  * \brief Metadata stored in model lib
  */
+#ifndef MLC_LLM_CPP_MODEL_METADATA_H_
+#define MLC_LLM_CPP_MODEL_METADATA_H_
 #define __STDC_FORMAT_MACROS
 #include <tvm/runtime/container/shape_tuple.h>
 #include <tvm/runtime/container/string.h>
@@ -43,3 +45,5 @@ struct ModelMetadata {
 
 }  // namespace llm
 }  // namespace mlc
+
+#endif

@@ -33,6 +33,7 @@
 
 #include "conversation.h"
 #include "loader/multi_gpu_loader.h"
+#include "loader/ndarray_cache_metadata.h"
 #include "model_metadata.h"
 #include "random.h"
 #include "support.h"
@@ -177,6 +178,23 @@ struct FunctionTable {
     }
   }
 
+  // std::unordered_map<std::string, ShardInfo> GetShardInfoMap(ModelMetadata model_metadata) {
+  //   picojson::object ret;
+  //   std::unordered_map<std::string, ShardInfo> shards;
+  //   for (ModelMetadata::Param param : model_metadata.params) {
+  //     ShardInfo shard_info;
+  //     ShardInfo::ShardFunc shard_func;
+  //     ShardInfo::TensorInfo output_info;
+  //     output_info.shape = param.preproc.out_shape;
+  //     output_info.dtype = param.preproc.out_dtype;
+  //     shard_func.name = param.preproc.func_name;
+  //     shard_func.output_info = output_info;
+  //     shard_info.funcs.emplace_back(shard_func);
+  //     shards[param.name] = shard_info;
+  //   }
+  //   return shards;
+  // }
+
   ObjectRef LoadParams(const std::string& model_path, Device device, bool use_presharded_weights) {
     if (this->use_disco) {
       std::filesystem::path fs_model_path = model_path;
@@ -190,7 +208,8 @@ struct FunctionTable {
       PackedFunc loader_load_all = this->get_global_func(load_all_func_name);
       CHECK(loader_create != nullptr);
       CHECK(loader_load_all != nullptr);
-      DRef loader = loader_create(metadata_path, ndarray_cache_metadata, "", this->disco_mod);
+      DRef loader =
+          loader_create(metadata_path, ndarray_cache_metadata, "", this->disco_mod, this->local_vm);
       DRef params = loader_load_all(loader);
       return params;
     } else {

@@ -31,6 +31,7 @@ class LlamaConfig(ConfigBase):  # pylint: disable=too-many-instance-attributes
     context_window_size: int = 0
     num_key_value_heads: int = 0
     head_dim: int = 0
+    num_shards: int = 1
     kwargs: Dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self):
@@ -103,16 +104,23 @@ class RotaryEmbedding(nn.Module):
 class LlamaFFN(nn.Module):
     def __init__(self, config: LlamaConfig):
         super().__init__()
+        self.num_shards = config.num_shards
+        intermediate_size = config.intermediate_size // config.num_shards
         self.gate_up_proj = nn.MultiLinear(
             in_features=config.hidden_size,
-            out_features=[config.intermediate_size, config.intermediate_size],
+            out_features=[intermediate_size, intermediate_size],
             bias=False,
         )
-        self.down_proj = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
+        self.down_proj = nn.Linear(intermediate_size, config.hidden_size, bias=False)
+        self.gate_up_proj.weight.shard_strategy = "shard_gate_up"
+        self.down_proj.weight.shard_strategy = "shard_linear_column"
 
     def forward(self, x: Tensor):
         x1, x2 = self.gate_up_proj(x)
-        return self.down_proj(op.silu(x1) * x2)
+        result = self.down_proj(op.silu(x1) * x2)
+        if self.num_shards > 1:
+            result = op.ccl_allreduce(result, "sum")
+        return result
 
 
 class LlamaAttention(nn.Module):  # pylint: disable=too-many-instance-attributes
@@ -120,8 +128,9 @@ class LlamaAttention(nn.Module):  # pylint: disable=too-many-instance-attributes
         self.rotary_embedding = rotary_embedding
         self.hidden_size = config.hidden_size
         self.head_dim = config.head_dim
-        self.num_q_heads = config.num_attention_heads
-        self.num_kv_heads = config.num_key_value_heads
+        self.num_shards = config.num_shards
+        self.num_q_heads = config.num_attention_heads // config.num_shards
+        self.num_kv_heads = config.num_key_value_heads // config.num_shards
         self.qkv_proj = nn.MultiLinear(
             in_features=config.hidden_size,
             out_features=[
@@ -131,7 +140,9 @@ class LlamaAttention(nn.Module):  # pylint: disable=too-many-instance-attributes
             ],
             bias=False,
         )
-        self.o_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
+        self.qkv_proj.weight.shard_strategy = "shard_qkv"
+        self.o_proj = nn.Linear(self.num_q_heads * self.head_dim, config.hidden_size, bias=False)
+        self.o_proj.weight.shard_strategy = "shard_linear_column"
         self.k_cache = nn.KVCache(config.context_window_size, [self.num_kv_heads, self.head_dim])
         self.v_cache = nn.KVCache(config.context_window_size, [self.num_kv_heads, self.head_dim])
 
@@ -172,7 +183,10 @@ class LlamaAttention(nn.Module):  # pylint: disable=too-many-instance-attributes
             attn_weights = op.softmax(attn_weights.astype("float32"), axis=-1).astype(dtype)
         # [b, h, s, t] x [b, h, t, d] => [b, h, s, d] => [b, s, h, d]
         output = op.matmul(attn_weights, v)
-        return self.o_proj(output.permute_dims([0, 2, 1, 3]).reshape((b, s, h_q * d)))
+        result = self.o_proj(output.permute_dims([0, 2, 1, 3]).reshape((b, s, h_q * d)))
+        if self.num_shards > 1:
+            result = op.ccl_allreduce(result, "sum")
+        return result
 
 
 class LlamaDecoderLayer(nn.Module):
@@ -195,6 +209,7 @@ class LlamaDecoderLayer(nn.Module):
 class LlamaModel(nn.Module):
     def __init__(self, config: LlamaConfig):
         assert config.hidden_size % config.num_attention_heads == 0
+        self.num_shards = config.num_shards
         rotary_embedding = RotaryEmbedding(config)
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList(
@@ -203,6 +218,8 @@ class LlamaModel(nn.Module):
         self.norm = nn.RMSNorm(config.hidden_size, -1, config.rms_norm_eps, bias=False)
 
     def forward(self, inputs: Tensor, total_seq_len: tir.Var, attention_mask: Tensor):
+        if self.num_shards > 1:
+            inputs = op.ccl_broadcast_from_worker0(inputs)
         hidden_states = self.embed_tokens(inputs)
         for layer in self.layers:
             hidden_states = layer(hidden_states, attention_mask, total_seq_len)

@@ -100,4 +100,7 @@ This flag subjects to future refactoring.
 the chunk size is the same as sliding window. Currently only useful when compiling Mistral.
 This flag subjects to future refactoring.
 """.strip(),
+    """num_shards""": """
+Number of shards to split the model into in tensor parallelism multi-gpu inference.
+""".strip(),
 }

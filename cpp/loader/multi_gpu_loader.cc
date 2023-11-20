@@ -1,5 +1,6 @@
 #include "multi_gpu_loader.h"
 
+#include "../model_metadata.h"
 namespace mlc {
 namespace llm {
 namespace loader {
@@ -20,8 +21,25 @@ inline int64_t IntegerFromShapeTuple(const ShapeTuple& shape) {
   return shape[0];
 }
 
+std::unordered_map<std::string, ShardInfo> GetShardInfoMap(ModelMetadata model_metadata) {
+  std::unordered_map<std::string, ShardInfo> shards;
+  for (ModelMetadata::Param param : model_metadata.params) {
+    ShardInfo shard_info;
+    ShardInfo::ShardFunc shard_func;
+    ShardInfo::TensorInfo output_info;
+    output_info.shape = param.preproc.out_shape;
+    output_info.dtype = param.preproc.out_dtype;
+    shard_func.name = param.preproc.func_name;
+    shard_func.output_info = output_info;
+    shard_info.funcs.emplace_back(shard_func);
+    shards[param.name] = shard_info;
+  }
+  return shards;
+}
+
 ObjectRef ShardLoaderObj::Create(const std::string& path_to_metadata, const std::string& metadata,
-                                 std::string shard_info, Module mod) {
+                                 std::string shard_info, Module mod,
+                                 tvm::runtime::Module local_vm) {
   if (shard_info.empty() && mod.defined()) {
     if (PackedFunc get_shard_info = mod->GetFunction("get_shard_info"); get_shard_info != nullptr) {
       shard_info = get_shard_info().operator String();
@@ -31,7 +49,13 @@ ObjectRef ShardLoaderObj::Create(const std::string& path_to_metadata, const std:
   n->metadata_ = NDArrayCacheMetadata::LoadFromStr(metadata, path_to_metadata);
   n->current_file_ = nullptr;
   n->param_info_.clear();
-  std::unordered_map<std::string, ShardInfo> shards = LoadShardInfoFromStr(shard_info);
+  ModelMetadata model_metadata_ = ModelMetadata::FromModule(local_vm);
+  std::unordered_map<std::string, ShardInfo> shards;
+  if (model_metadata_.params.empty()) {
+    shards = LoadShardInfoFromStr(shard_info);
+  } else {
+    shards = GetShardInfoMap(model_metadata_);
+  }
   for (const FileRecord& file_record : n->metadata_.records) {
     for (const ParamRecord& param_record : file_record.records) {
       const std::string& name = param_record.name;
