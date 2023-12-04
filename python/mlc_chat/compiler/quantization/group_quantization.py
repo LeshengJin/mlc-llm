@@ -283,7 +283,7 @@ class GroupQuantizeLinear(nn.Module):
         self.q_weight = nn.Parameter(
             (out_features, config.num_storage_per_group * num_group), config.storage_dtype
         )
-        self.q_scale = nn.Parameter((out_features, num_group), self.dtype)
+        self.q_scale = nn.Parameter((out_features, num_group), config.model_dtype)
         if bias:
             self.bias = nn.Parameter(
                 (out_features,), self.dtype if self.out_dtype is None else self.out_dtype
@@ -342,6 +342,8 @@ class GroupQuantizeLinear(nn.Module):
             args=[self.q_weight, self.q_scale],
         )
         w = nn.op.permute_dims(w)  # pylint: disable=invalid-name
+        if w.dtype != x.dtype:
+            w = w.astype(x.dtype)
         x = nn.op.matmul(x, w, out_dtype=self.out_dtype)
         if self.bias is not None:
             x = x + self.bias

@@ -136,11 +136,14 @@ class GPTNeoXAttention(nn.Module):
         assert batch_size == 1, "Only support batch size 1 at this moment."
 
         # q/k/v states: [batch_size, seq_len, hidden_size]
-        q, k, v = self.query_key_value(hidden_states)
+        qkv = self.query_key_value(hidden_states)
+        qkv = op.reshape(qkv, (batch_size, seq_len, 3 * self.num_attention_heads, self.head_dim))
+        q, k, v = op.split(
+            qkv,
+            indices_or_sections=[self.num_attention_heads, 2 * self.num_attention_heads],
+            axis=2,
+        )
         # q/k/v states: [batch_size, seq_len, num_attention_heads, head_size]
-        q = op.reshape(q, (batch_size, seq_len, self.num_attention_heads, self.head_dim))
-        k = op.reshape(k, (batch_size, seq_len, self.num_attention_heads, self.head_dim))
-        v = op.reshape(v, (batch_size, seq_len, self.num_attention_heads, self.head_dim))
         q, k = self.rotary_embedding(q, k, total_seq_len - seq_len)
         self.k_cache.append(op.squeeze(k, axis=0))
         self.v_cache.append(op.squeeze(v, axis=0))
@@ -368,5 +371,4 @@ class GPTNeoXForCausalLM(nn.Module):
                 },
             },
         }
-        return nn.spec.ModuleSpec.from_raw(mod_spec, self)
         return nn.spec.ModuleSpec.from_raw(mod_spec, self)
