@@ -36,7 +36,7 @@ class GPTNeoXConfig(ConfigBase):  # pylint: disable=too-many-instance-attributes
     ffn_out_dtype: str = "float32"
     kwargs: Dict[str, Any] = dataclasses.field(default_factory=dict)
 
-    def __post__init__(self):
+    def __post_init__(self):
         if self.context_window_size == 0:
             for name in ["max_position_embeddings", "max_sequence_length"]:
                 if name in self.kwargs:
@@ -110,11 +110,11 @@ class GPTNeoXAttention(nn.Module):
     def __init__(self, config: GPTNeoXConfig, rotary_embedding: RotaryEmbedding):
         self.rotary_embedding = rotary_embedding
         self.hidden_size = config.hidden_size
-        self.head_dim = config.head_dim
         self.num_attention_heads = config.num_attention_heads
-        self.query_key_value = nn.MultiLinear(
+        self.head_dim = config.head_dim
+        self.query_key_value = nn.Linear(
             in_features=self.hidden_size,
-            out_features=[self.hidden_size, self.hidden_size, self.hidden_size],
+            out_features=3 * self.hidden_size,
             bias=True,
         )
         self.dense = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
@@ -215,15 +215,17 @@ class GPTNeoXMLP(nn.Module):
         )
 
     def forward(self, hidden_states: Tensor):
-        if hidden_states.dtype != self.dtype:
-            hidden_states.astype(self.dtype)
+        # dtype = "float16"
+        dtype = hidden_states.dtype
+        if hidden_states.dtype != dtype:
+            hidden_states.astype(dtype)
         hidden_states = self.dense_h_to_4h(hidden_states)
         hidden_states = op.gelu(hidden_states)
-        if hidden_states.dtype != self.dtype:
-            hidden_states.astype(self.dtype)
+        if hidden_states.dtype != dtype:
+            hidden_states.astype(dtype)
         hidden_states = self.dense_4h_to_h(hidden_states)
-        if hidden_states.dtype != self.dtype:
-            hidden_states.astype(self.dtype)
+        if hidden_states.dtype != dtype:
+            hidden_states.astype(dtype)
         return hidden_states
 
 
@@ -241,6 +243,8 @@ class GPTNeoXLayer(nn.Module):
         attention_mask: Tensor,
         total_seq_len: tir.Var,
     ):
+        # dtype = "float16"
+        dtype = hidden_states.dtype
         attn_input = self.input_layernorm(hidden_states)
         attn_output = self.attention(
             attn_input,
@@ -255,7 +259,7 @@ class GPTNeoXLayer(nn.Module):
             attn_output = attn_output + hidden_states
             mlp_input = self.post_attention_layernorm(attn_output)
             mlp_output = self.mlp(mlp_input)
-            hidden_states = mlp_output.astype(mlp_output) + attn_output
+            hidden_states = mlp_output.astype(dtype) + attn_output
         return hidden_states
 
 
@@ -364,4 +368,5 @@ class GPTNeoXForCausalLM(nn.Module):
                 },
             },
         }
+        return nn.spec.ModuleSpec.from_raw(mod_spec, self)
         return nn.spec.ModuleSpec.from_raw(mod_spec, self)

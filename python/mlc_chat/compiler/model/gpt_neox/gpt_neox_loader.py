@@ -39,6 +39,7 @@ def huggingface(model_config: GPTNeoXConfig, quantization: Quantization) -> Exte
         attn = f"gpt_neox.layers.{i}.attention"
         mapping.add_unused(f"{attn}.rotary_emb.inv_freq")
         mapping.add_unused(f"{attn}.masked_bias")
+        mapping.add_unused(f"{attn}.bias")
 
     for mlc_name, mlc_param in named_parameters.items():
         if "layernorm" in mlc_name or "layer_norm" in mlc_name or "embed_out" in mlc_name:

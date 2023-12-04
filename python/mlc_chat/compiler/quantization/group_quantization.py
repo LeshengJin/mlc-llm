@@ -270,20 +270,24 @@ class GroupQuantizeLinear(nn.Module):
         out_features: int,
         config: GroupQuantize,
         bias: bool = True,
+        dtype: Optional[str] = None,
         out_dtype: Optional[str] = None,
     ) -> None:
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
+        self.dtype = config.model_dtype if dtype is None else dtype
         self.out_dtype = out_dtype
         self.config = config
         num_group = tir.ceildiv(in_features, config.group_size)
         self.q_weight = nn.Parameter(
             (out_features, config.num_storage_per_group * num_group), config.storage_dtype
         )
-        self.q_scale = nn.Parameter((out_features, num_group), config.model_dtype)
+        self.q_scale = nn.Parameter((out_features, num_group), self.dtype)
         if bias:
-            self.bias = nn.Parameter((out_features,), config.model_dtype)
+            self.bias = nn.Parameter(
+                (out_features,), self.dtype if self.out_dtype is None else self.out_dtype
+            )
         else:
             self.bias = None
 
@@ -310,6 +314,7 @@ class GroupQuantizeLinear(nn.Module):
             out_features=linear.out_features,
             config=config,
             bias=getattr(linear, "bias", None) is not None,
+            dtype=getattr(linear, "dtype", None),
             out_dtype=linear.out_dtype,
         )
 
