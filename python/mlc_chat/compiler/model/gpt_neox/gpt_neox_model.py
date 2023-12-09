@@ -170,7 +170,6 @@ class GPTNeoXAttention(nn.Module):
         # [batch_size, num_attention_heads, head_size, total_seq_len]
         # [batch_size, num_attention_heads, seq_len, totla_seq_len]
         attn_weights = op.matmul(q, k.permute_dims([0, 1, 3, 2])) / math.sqrt(self.head_dim)
-
         # Apply attention mask
         dtype = attn_weights.dtype
         attn_weights = attn_weights.maximum(tir.min_value(dtype)).minimum(attention_mask)

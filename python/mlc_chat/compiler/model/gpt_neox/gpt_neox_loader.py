@@ -4,6 +4,8 @@ PyTorch, HuggingFace safetensors.
 """
 import functools
 
+import numpy as np
+
 from ...loader import ExternMapping
 from ...quantization import Quantization
 from .gpt_neox_model import GPTNeoXConfig, GPTNeoXForCausalLM
@@ -35,25 +37,52 @@ def huggingface(model_config: GPTNeoXConfig, quantization: Quantization) -> Exte
     mapping = ExternMapping()
 
     for i in range(model_config.num_hidden_layers):
-        # inv_freq is not used in the model
+        # inv_freq/masked_bias/bias is not used in the model
         attn = f"gpt_neox.layers.{i}.attention"
         mapping.add_unused(f"{attn}.rotary_emb.inv_freq")
         mapping.add_unused(f"{attn}.masked_bias")
         mapping.add_unused(f"{attn}.bias")
 
+        # change the layout of query_key_value
+        def transform_qkv_layout(w, dtype):
+            num_attention_heads = model_config.num_attention_heads
+            head_dim = model_config.head_dim
+
+            org_shape = w.shape
+            w = np.reshape(w, [num_attention_heads, 3 * head_dim, -1])
+            qkv = np.split(w, indices_or_sections=3, axis=1)
+            w = np.concatenate(qkv, axis=0)
+            w = np.reshape(w, org_shape)
+            return w.astype(dtype)
+
+        qkv_proj = f"{attn}.query_key_value"
+        for param_name in ["weight", "bias"]:
+            mlc_name = f"{qkv_proj}.{param_name}"
+            mlc_param = named_parameters[mlc_name]
+            mapping.add_mapping(
+                mlc_name,
+                [mlc_name],
+                functools.partial(
+                    transform_qkv_layout,
+                    dtype=mlc_param.dtype,
+                ),
+            )
+
     for mlc_name, mlc_param in named_parameters.items():
-        if "layernorm" in mlc_name or "layer_norm" in mlc_name or "embed_out" in mlc_name:
-            param_dtype = "float32"
-        elif ".dense_h_to_4h.bias" in mlc_name or ".dense_4h_to_h.bias" in mlc_name:
-            param_dtype = model_config.ffn_out_dtype
-        else:
-            param_dtype = mlc_param.dtype
-        mapping.add_mapping(
-            mlc_name,
-            [mlc_name],
-            functools.partial(
-                lambda x, dtype: x.astype(dtype),
-                dtype=param_dtype,
-            ),
-        )
+        if mlc_name not in mapping.param_map:
+            if "layernorm" in mlc_name or "layer_norm" in mlc_name or "embed_out" in mlc_name:
+                param_dtype = "float32"
+                # param_dtype = mlc_param.dtype
+            elif ".dense_h_to_4h.bias" in mlc_name or ".dense_4h_to_h.bias" in mlc_name:
+                param_dtype = model_config.ffn_out_dtype
+            else:
+                param_dtype = mlc_param.dtype
+            mapping.add_mapping(
+                mlc_name,
+                [mlc_name],
+                functools.partial(
+                    lambda x, dtype: x.astype(dtype),
+                    dtype=param_dtype,
+                ),
+            )
     return mapping

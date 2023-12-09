@@ -104,6 +104,7 @@ MODELS: Dict[str, Model] = {
             "huggingface-safetensor": gpt_neox_loader.huggingface,
         },
         quantize={
+            "no-quant": gpt_neox_quantization.no_quant,
             "group-quant": gpt_neox_quantization.group_quant,
         },
     ),
