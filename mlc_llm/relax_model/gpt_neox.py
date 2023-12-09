@@ -86,6 +86,7 @@ class GPTNeoXAttention(nn.Module):
         all_seq_len_shape: relax.Expr,
         past_key_value: Optional[Tuple[relax.Expr, relax.Expr]] = None,
         attention_mask: Optional[relax.Expr] = None,
+        dummy_obj=None,
     ) -> Tuple[relax.Expr, Union[Tuple[None, None], Tuple[relax.Expr, relax.Expr]]]:
         # hidden_states: [batch_size, seq_len, hidden_size]
         if hidden_states.struct_info.dtype != self.dtype:
@@ -107,7 +108,55 @@ class GPTNeoXAttention(nn.Module):
 
         # q/k/v states: [batch_size, seq_len, num_attention_heads, head_size]
         q, k, v = [relax.TupleGetItem(qkv_states, idx) for idx in range(3)]
+        if self.idx == 0:
+            dummy_obj = nn.emit(
+                relax.call_pure_packed(
+                    "debug_print",
+                    dummy_obj,
+                    relax.StringImm("line 123"),
+                    q,
+                    sinfo_args=dummy_obj.struct_info,
+                )
+            )
+            dummy_obj = nn.emit(
+                relax.call_pure_packed(
+                    "debug_print",
+                    dummy_obj,
+                    relax.StringImm("line 123"),
+                    k,
+                    sinfo_args=dummy_obj.struct_info,
+                )
+            )
+            dummy_obj = nn.emit(
+                relax.call_pure_packed(
+                    "debug_print",
+                    dummy_obj,
+                    relax.StringImm("line 123"),
+                    v,
+                    sinfo_args=dummy_obj.struct_info,
+                )
+            )
         q, k = self.rotary_embedding(q, k, kv_seq_len - seq_len)
+
+        # if self.idx == 0:
+        #     dummy_obj = nn.emit(
+        #         relax.call_pure_packed(
+        #             "debug_print",
+        #             dummy_obj,
+        #             relax.StringImm("line 123"),
+        #             q,
+        #             sinfo_args=dummy_obj.struct_info,
+        #         )
+        #     )
+        #     dummy_obj = nn.emit(
+        #         relax.call_pure_packed(
+        #             "debug_print",
+        #             dummy_obj,
+        #             relax.StringImm("line 123"),
+        #             k,
+        #             sinfo_args=dummy_obj.struct_info,
+        #         )
+        #     )
 
         if past_key_value is not None:
             f_kv_cache_append = relax.extern("vm.builtin.attention_kv_cache_append")
@@ -162,6 +211,25 @@ class GPTNeoXAttention(nn.Module):
                 q.struct_info.dtype,
             )
         )
+        # if self.idx == 0:
+        #     dummy_obj = nn.emit(
+        #         relax.call_pure_packed(
+        #             "debug_print",
+        #             dummy_obj,
+        #             relax.StringImm("line 123"),
+        #             attn_weights,
+        #             sinfo_args=dummy_obj.struct_info,
+        #         )
+        #     )
+        #     dummy_obj = nn.emit(
+        #         relax.call_pure_packed(
+        #             "debug_print",
+        #             dummy_obj,
+        #             relax.StringImm("line 123"),
+        #             attention_mask,
+        #             sinfo_args=dummy_obj.struct_info,
+        #         )
+        #     )
         # Apply attention mask
         attn_weights = nn.emit(
             maximum(
@@ -188,7 +256,7 @@ class GPTNeoXAttention(nn.Module):
                 (batch_size, seq_len, self.hidden_size),
             )
         )
-        return attn_output, past_key_value
+        return attn_output, past_key_value, dummy_obj
 
 
 class GPTNeoXMLP(nn.Module):
@@ -272,14 +340,37 @@ class GPTNeoXLayer(nn.Module):
         all_seq_len_shape: relax.Expr,
         past_key_value: Optional[Tuple[relax.Expr]] = None,
         attention_mask: Optional[relax.Expr] = None,
+        dummy_obj=None,
     ):
         attn_input = self.input_layernorm(hidden_states)
-        attn_output, present_key_value = self.attention(
+        # if self.idx == 0:
+        #     dummy_obj = nn.emit(
+        #         relax.call_pure_packed(
+        #             "debug_print",
+        #             dummy_obj,
+        #             relax.StringImm("line 123"),
+        #             attn_input,
+        #             sinfo_args=dummy_obj.struct_info,
+        #         )
+        #     )
+        self.attention.idx = self.idx
+        attn_output, present_key_value, dummy_obj = self.attention(
             attn_input,
             all_seq_len_shape,
             past_key_value,
             attention_mask,
+            dummy_obj,
         )
+        # if self.idx == 0:
+        #     dummy_obj = nn.emit(
+        #         relax.call_pure_packed(
+        #             "debug_print",
+        #             dummy_obj,
+        #             relax.StringImm("line 123"),
+        #             attn_output,
+        #             sinfo_args=dummy_obj.struct_info,
+        #         )
+        #     )
         if self.use_parallel_residual:
             mlp_input = self.post_attention_layernorm(hidden_states)
             mlp_output = self.mlp(mlp_input)
@@ -289,7 +380,7 @@ class GPTNeoXLayer(nn.Module):
             mlp_input = self.post_attention_layernorm(attn_output)
             mlp_output = self.mlp(mlp_input)
             hidden_states = nn.emit(astype(mlp_output, self.dtype) + attn_output)
-        return hidden_states, present_key_value
+        return hidden_states, present_key_value, dummy_obj
 
 
 def _prepare_decoder_attention_mask(input_shape, src_len, dtype):
@@ -395,6 +486,8 @@ class GPTNeoXModel(nn.Module):
                 for _ in range(config.num_hidden_layers)
             ]
         )
+        for i in range(config.num_hidden_layers):
+            self.layers[i].idx = i
         self.final_layer_norm = LayerNorm(
             hidden_size=config.hidden_size,
             eps=config.layer_norm_eps,
@@ -406,6 +499,7 @@ class GPTNeoXModel(nn.Module):
         inputs: relax.Expr,
         all_seq_len_shape: relax.Expr,
         past_key_values: Optional[Tuple[relax.Expr, relax.Expr]],
+        dummy_obj: relax.Expr,
     ):
         # embed positions
         hidden_states = self.embed_in(inputs) if self.embed_in else inputs
@@ -424,16 +518,17 @@ class GPTNeoXModel(nn.Module):
                 if past_key_values is not None
                 else None
             )
-            hidden_states, (present_k_cache, present_v_cache) = layer(
+            hidden_states, (present_k_cache, present_v_cache), dummy_obj = layer(
                 hidden_states,
                 attention_mask=attention_mask,
                 past_key_value=past_key_value,
                 all_seq_len_shape=all_seq_len_shape,
+                dummy_obj=dummy_obj,
             )
             present_kv_cache.append(present_k_cache)
             present_kv_cache.append(present_v_cache)
         hidden_states = self.final_layer_norm(hidden_states)
-        return hidden_states, present_kv_cache
+        return hidden_states, present_kv_cache, dummy_obj
 
 
 class GPTNeoXForCausalLM(nn.Module):
@@ -455,11 +550,13 @@ class GPTNeoXForCausalLM(nn.Module):
         inputs: relax.Expr,
         all_seq_len_shape: relax.Expr,
         past_key_values: Optional[List[relax.Expr]],
+        dummy_obj: relax.Expr,
     ):
-        hidden_states, key_value_cache = self.gpt_neox(
+        hidden_states, key_value_cache, dummy_obj_new = self.gpt_neox(
             inputs=inputs,
             all_seq_len_shape=all_seq_len_shape,
             past_key_values=past_key_values,
+            dummy_obj=dummy_obj,
         )
 
         def _slice(x: te.Tensor):
@@ -477,7 +574,7 @@ class GPTNeoXForCausalLM(nn.Module):
         )
         hidden_states = astype(hidden_states, "float32")
         logits = self.embed_out(hidden_states)
-        return logits, key_value_cache
+        return logits, key_value_cache, dummy_obj_new
 
 
 def get_param_quant_kind(name: str, param_info: relax.TensorStructInfo) -> ParamQuantKind:
@@ -550,22 +647,25 @@ def create_encoding_func(
                 [relax.ObjectStructInfo() for _ in range(config.num_hidden_layers * 2)]
             ),
         )
+        dummy_obj = nn.Placeholder((1, 1), dtype="int32", name="dummy_obj")
         with bb.dataflow():
-            logits, key_value_cache = model(
+            logits, key_value_cache, dummy_obj_new = model(
                 inputs=inputs,
                 all_seq_len_shape=all_seq_len_shape,
                 past_key_values=past_key_values,
+                dummy_obj=dummy_obj,
             )
             params = [
                 inputs,
                 all_seq_len_shape,
                 past_key_values,
+                dummy_obj,
             ] + model.parameters()
-            gv = bb.emit_output((logits, relax.Tuple(key_value_cache)))
+            gv = bb.emit_output((logits, relax.Tuple(key_value_cache), dummy_obj_new))
         bb.emit_func_output(gv, params)
     mod = bb.get()
     gv = mod.get_global_var(func_name)
-    bb.update_func(gv, mod[gv].with_attr("num_input", 3))
+    bb.update_func(gv, mod[gv].with_attr("num_input", 4))
 
 
 def create_decoding_func(
@@ -594,22 +694,25 @@ def create_decoding_func(
                 [relax.ObjectStructInfo() for _ in range(config.num_hidden_layers * 2)]
             ),
         )
+        dummy_obj = nn.Placeholder((1, 1), dtype="int32", name="dummy_obj")
         with bb.dataflow():
-            logits, key_value_cache = model(
+            logits, key_value_cache, dummy_obj_new = model(
                 inputs=input_ids,
                 all_seq_len_shape=all_seq_len_shape,
                 past_key_values=past_key_values,
+                dummy_obj=dummy_obj,
             )
             params = [
                 input_ids,
                 all_seq_len_shape,
                 past_key_values,
+                dummy_obj,
             ] + model.parameters()
-            gv = bb.emit_output((logits, relax.Tuple(key_value_cache)))
+            gv = bb.emit_output((logits, relax.Tuple(key_value_cache), dummy_obj_new))
         bb.emit_func_output(gv, params)
     mod = bb.get()
     gv = mod.get_global_var(func_name)
-    bb.update_func(gv, mod[gv].with_attr("num_input", 3))
+    bb.update_func(gv, mod[gv].with_attr("num_input", 4))
 
 
 def create_kv_cache_func(

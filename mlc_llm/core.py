@@ -560,6 +560,7 @@ def mod_transform_before_build(
             model_names += ["reset_kv_cache"]
 
     mod = param_manager.transform_dequantize()(mod)
+    utils.debug_dump_script(mod, "mod_dequantize.py", args)
     mod = relax.transform.BundleModelParams()(mod)
 
     use_ft_quant = args.quantization.name in [
@@ -764,6 +765,11 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
 
 
 def build_model_from_args(args: argparse.Namespace):
+    @tvm.register_func("debug_print")
+    def debug_print(dummy_object, info, a):
+        print(a.numpy())
+        return dummy_object
+
     if args.quantization == "q4f16_0":
         print(
             "WARNING: q4f16_1 is preferred to q4f16_0, "

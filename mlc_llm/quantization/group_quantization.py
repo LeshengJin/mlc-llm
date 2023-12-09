@@ -3,13 +3,19 @@ from typing import List, Literal, Optional
 
 import tvm
 from tvm import relax, te, tir, topi
-from tvm.script import tir as T
 from tvm.relax.expr_functor import visitor
+from tvm.script import tir as T
 
 from . import tir_utils
-from .quantization import QuantizationSpec, QuantSpecUpdater
-from .quantization import NoQuantizationSpec
-from .quantization import FQuantize, FTEQuantize, FTEDequantize, convert_TE_func
+from .quantization import (
+    FQuantize,
+    FTEDequantize,
+    FTEQuantize,
+    NoQuantizationSpec,
+    QuantizationSpec,
+    QuantSpecUpdater,
+    convert_TE_func,
+)
 
 
 @dataclass
@@ -59,6 +65,7 @@ class GroupQuantizationSpec(QuantizationSpec):
 
 # fmt: off
 def encoding_func(sym: bool, group_size: int, nbit: int, mode: str, storage_nbit: int, transpose: bool=True, dtype: str = "float32") -> FTEQuantize:
+    # print(dtype)
     def te_encode_asym(weight: te.Tensor):
         assert weight.shape[1] % group_size == 0
         n_group = weight.shape[1] // group_size
@@ -94,6 +101,7 @@ def encoding_func(sym: bool, group_size: int, nbit: int, mode: str, storage_nbit
                 min_value = te.compute(shape=(n_group, weight.shape[0]), fcompute=lambda j, i: min_value[i, j], name="min_transpose")
             else:
                 w_gathered = te.compute(shape=(weight.shape[0], weight.shape[1] // n_float_per_u32), fcompute=lambda i, j: reducer(f_scale_weight(i, j * n_float_per_u32 + k) << (k * nbit).astype("uint32"), axis=k), name="w_gathered")
+            # print(scale.dtype)
             return w_gathered, scale, min_value
 
     def te_encode_sym(weight: te.Tensor):
@@ -111,6 +119,9 @@ def encoding_func(sym: bool, group_size: int, nbit: int, mode: str, storage_nbit
             return (max_value / tir.const(max_int_value, dtype)) if mode.startswith("int") else max_value
 
         scale = te.compute(shape=scale_min_shape, fcompute=f_compute_scale, name="scale")
+        print("====")
+        print(scale.dtype)
+        print(dtype)
         storage_dtype = ("uint" + str(storage_nbit)) if mode.startswith("int") else "uint32"
 
         def f_scale_weight(i, j):
@@ -131,6 +142,7 @@ def encoding_func(sym: bool, group_size: int, nbit: int, mode: str, storage_nbit
             scale = te.compute(shape=(n_group, weight.shape[0]), fcompute=lambda j, i: scale[i, j])
         else:
             w_gathered = te.compute(shape=(weight.shape[0], n_i32), fcompute=lambda i, j: reducer(tir.if_then_else(j * n_float_per_int + k < weight.shape[1], f_scale_weight(i, j * n_float_per_int + k) << (k.astype(storage_dtype) * tir.const(nbit, storage_dtype)), tir.const(0, storage_dtype)), axis=k), name="w_gathered")
+        # print(scale.dtype)
         return w_gathered, scale
 
     return te_encode_sym if sym else te_encode_asym

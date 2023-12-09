@@ -327,6 +327,18 @@ def load_params(artifact_path: str, device) -> List[tvm.nd.NDArray]:
     return plist
 
 
+def load_params2(artifact_path: str, device, param_names) -> List[tvm.nd.NDArray]:
+    from tvm.contrib import tvmjs  # pylint: disable=import-outside-toplevel
+
+    params, meta = tvmjs.load_ndarray_cache(f"{artifact_path}/params", device)
+    plist = []
+    # print(params.keys())
+    for name in param_names:
+        plist.append(params[name])
+
+    return plist
+
+
 def copy_tokenizer(args: argparse.Namespace) -> None:
     for filename in os.listdir(args.model_path):
         if filename in [

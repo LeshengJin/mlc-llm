@@ -40,7 +40,7 @@ def _mlc_llm_pipeline():
                 _LogProgress("Running TVM Relax graph-level optimizations"),
                 FuseDequantizeTranspose(skip_gemm=False),
                 FuseTransposeMatmul(),
-                FuseSplitRotaryEmbedding(),
+                # FuseSplitRotaryEmbedding(),
                 # Phase 2. Lowering to TIR, inherited TVM Relax's official "zero" pipeline
                 _LogProgress("Lowering to TVM TIR kernels"),
                 tvm.relax.transform.LegalizeOps(),
