@@ -36,20 +36,19 @@ def chat(modelname: str, devicename: str, chatconfig: ChatConfig, modellib: str)
     prompt = input(f"{ps} ")
 
     while prompt != "/exit":
-        match prompt:
-            case "/help":
-                print_available_commands()
-            case "/stats":
-                print(f"Statistics: {cm.stats()}\n")
-            case "/reset":
-                cm.reset_chat()
-            case "/reload":
-                print("not yet implemented.")
-            case _:
-                cm.generate(
-                    prompt,
-                    progress_callback=StreamToStdout(callback_interval=2),
-                )
+        if prompt == "/help":
+            print_available_commands()
+        elif prompt == "/stats":
+            print(f"Statistics: {cm.stats()}\n")
+        elif prompt == "/reset":
+            cm.reset_chat()
+        elif prompt == "/reload":
+            print("not yet implemented.")
+        else:
+            cm.generate(
+                prompt,
+                progress_callback=StreamToStdout(callback_interval=2),
+            )
         prompt = input(f"{ps} ")
 
     # Print prefill and decode performance statistics
