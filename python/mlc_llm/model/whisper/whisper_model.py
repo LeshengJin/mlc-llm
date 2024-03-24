@@ -9,7 +9,7 @@ import tvm
 from tvm import te, tir
 from tvm.relax.frontend import nn
 
-from mlc_chat import op as op_ext
+from mlc_llm import op as op_ext
 from mlc_chat.support import logging
 from mlc_chat.support.config import ConfigBase
 
