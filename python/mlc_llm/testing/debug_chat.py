@@ -124,7 +124,11 @@ class DefaultDebugInstrument:
             if isinstance(arg, tvm.nd.NDArray):
                 arg_dict[f"arg_{i}"] = arg.numpy()
 
-        np.savez(self.debug_out / f"{func_name}.npz", **arg_dict)
+        # new
+        if self.first_nan_occurred or self.first_inf_occurred:
+            with open("shit.txt", "w+") as f:
+                f.write(str(Path(self.debug_out / f"{func_name}.npz").absolute()) + "\n")
+            np.savez(self.debug_out / f"{func_name}.npz", **arg_dict)
 
         self.counter += 1
 
@@ -343,8 +347,8 @@ class DebugChat:  # pylint: disable=too-many-instance-attributes, too-few-public
         self, logits: tvm.nd.NDArray, generation_config: GenerationConfig
     ):
         logits_np = logits.numpy()
-        temperature = generation_config.temperature if generation_config.temperature else 1.0
-        top_p = generation_config.top_p if generation_config.top_p else 0.95
+        temperature = generation_config.temperature if generation_config.temperature is not None else 1.0
+        top_p = generation_config.top_p if generation_config.top_p is not None else 0.95
         presence_penalty = generation_config.presence_penalty
         frequency_penalty = generation_config.frequency_penalty
 
@@ -353,7 +357,9 @@ class DebugChat:  # pylint: disable=too-many-instance-attributes, too-few-public
 
         self._softmax_with_temperature(logits_np, temperature)
         logits = logits.copyfrom(logits_np)
+        top_p = 0
         next_token = self.sample_topp_from_prob_func(logits, top_p, random.random())
+        print(next_token)
         return next_token
 
     def generate(
@@ -384,6 +390,7 @@ class DebugChat:  # pylint: disable=too-many-instance-attributes, too-few-public
         embedding, input_len = self._embed(input_tokens)
         logits, kv_caches = self._prefill(embedding, input_len)
         generation_config = _get_generation_config(self.chat_config, generation_config)
+        # generation_config.temperature = 0
         next_token = self._sample_token_from_logits(logits, generation_config)
         out_tokens.append(next_token)
         path_str = (self.debug_dir / "prefill").as_posix()
@@ -394,6 +401,7 @@ class DebugChat:  # pylint: disable=too-many-instance-attributes, too-few-public
             self.instrument.reset(self.debug_dir / f"decode_{i}")
             logits = self._decode(next_token, kv_caches)
             generation_config = _get_generation_config(self.chat_config, generation_config)
+            # generation_config.temperature = 0
             next_token = self._sample_token_from_logits(logits, generation_config)
             out_tokens.append(next_token)
             path_str = (self.debug_dir / f"decode_{i}").as_posix()
